@@ -258,7 +258,9 @@ def optimize_team(req: OptimizeRequest):
             "starting_11": proposed_xi.to_dict(orient="records"), 
             "bench": proposed_bench.to_dict(orient="records"),
             "captain": captain,
-            "vice": vice
+            "vice": vice,
+            "bank": bank10 / 10.0,
+            "team_value": selling_value10 / 10.0
         }
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
@@ -294,6 +296,7 @@ def get_chips(req: OptimizeRequest):
         
         selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
         budget10 = selling_value10 + bank10
+        
         current_squad = df[df['id'].isin(current_ids)].copy()
         
         weeks = list(range(target_gw, 20))
@@ -320,6 +323,17 @@ def get_chips(req: OptimizeRequest):
         best_tc_gw = best_week({g: weekly[g]["tc"] for g in weeks})
         best_fh_gw = best_week(fh_values)
         
+        wc_values = {}
+        for gw in weeks:
+            if gw == best_fh_gw: continue
+            try:
+                wc_squad = solve_squad(df, budget10=budget10, target_gw=gw, horizon=3, objective="horizon", current_ids=set(), force_free_hit=True)
+                wc_xi, _, wc_points = best_legal_xi(wc_squad, gw)
+                wc_values[gw] = (wc_points - weekly[gw]["xi"])
+            except: wc_values[gw] = 0.0
+            
+        best_wc_gw = best_week(wc_values) if wc_values else best_fh_gw
+
         fh_squad = solve_squad(df, budget10=budget10, target_gw=best_fh_gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
         fh_xi, fh_bench, _ = best_legal_xi(fh_squad, best_fh_gw)
 
@@ -330,7 +344,7 @@ def get_chips(req: OptimizeRequest):
                 "bench_boost": {"gw": best_bb_gw, "reason": f"Highest projected bench points ({weekly[best_bb_gw]['bb']:.1f} pts).", "used": "BB" in used_chips},
                 "triple_captain": {"gw": best_tc_gw, "reason": f"Highest projected captain points: {weekly[best_tc_gw]['captain']} ({weekly[best_tc_gw]['tc']:.1f} pts).", "used": "TC" in used_chips},
                 "free_hit": {"gw": best_fh_gw, "reason": f"Biggest upgrade to your starting 11 (+{fh_values[best_fh_gw]:.1f} pts).", "used": "FH" in used_chips},
-                "wildcard": {"gw": best_fh_gw, "reason": "Major fixture swing to restructure.", "used": "WC" in used_chips}
+                "wildcard": {"gw": best_wc_gw, "reason": "Major fixture swing to restructure.", "used": "WC" in used_chips}
             },
             "free_hit_team": {"starting_11": fh_xi.to_dict(orient="records"), "bench": fh_bench.to_dict(orient="records")}
         }
