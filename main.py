@@ -8,7 +8,6 @@ import uvicorn
 
 app = FastAPI(title="FPL Genius API")
 
-# Allow your future website to communicate with this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,9 +22,6 @@ GOAL_POINTS = {"GK": 6, "DEF": 6, "MID": 5, "FWD": 4}
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "FPL-Genius-API/1.0"})
 
-# ==========================================
-# MODELS
-# ==========================================
 class Transfer(BaseModel):
     out_player: str
     in_player: str
@@ -35,9 +31,6 @@ class OptimizeRequest(BaseModel):
     free_transfers: int
     manual_transfers: list[Transfer] = []
 
-# ==========================================
-# HELPER FUNCTIONS (The Math Brain)
-# ==========================================
 def api_get(path):
     res = HTTP.get(BASE + path)
     res.raise_for_status()
@@ -60,7 +53,6 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
     teams_short = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
     completed_gws = sum(1 for e in bootstrap["events"] if e.get("finished"))
     
-    # Map fixtures
     fmap = {}
     for f in fixtures:
         if not f.get("event"): continue
@@ -123,19 +115,16 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
     return pd.DataFrame(rows)
 
 def run_optimizer(df, budget, target_gw, fts, current_ids, manual_transfers):
-    # Apply manual transfers
     for t in manual_transfers:
         out_p = df[df["name"] == t.out_player].iloc[0]
         in_p = df[df["name"] == t.in_player].iloc[0]
         if out_p["id"] in current_ids:
             current_ids.remove(out_p["id"])
             current_ids.add(in_p["id"])
-            # Note: Budget adjustments would happen here in a full production app
 
     prob = pulp.LpProblem("FPL_Opt", pulp.LpMaximize)
     x = prob.add_variable_dicts("pick", df.index, cat=pulp.LpBinary)
 
-    # Objective: Max points over horizon
     prob += pulp.lpSum(x[i] * sum(df.loc[i, "proj"].values()) for i in df.index)
 
     for pos, cnt in SQUAD_COUNTS.items():
@@ -150,9 +139,6 @@ def run_optimizer(df, budget, target_gw, fts, current_ids, manual_transfers):
     chosen = [i for i in df.index if pulp.value(x[i]) and pulp.value(x[i]) > 0.5]
     return df.loc[chosen].to_dict(orient="records")
 
-# ==========================================
-# ROUTES
-# ==========================================
 @app.get("/api/team/{team_id}")
 def get_team(team_id: int):
     try:
@@ -183,15 +169,50 @@ def optimize_team(req: OptimizeRequest):
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
         owned = {p['element']: {"selling_price": 0} for p in picks['picks']}
         
-        # In a production app, you'd fetch real selling prices here
-        # For now, we use current market price for math
         df = calculate_projections(bootstrap, fixtures, owned, target_gw)
-        
         budget = (sum(df[df["id"].isin(owned)]["price"]) + (picks['entry_history']['bank'] / 10.0))
         
         optimal_squad = run_optimizer(df, budget, target_gw, req.free_transfers, list(owned.keys()), req.manual_transfers)
+        squad_df = pd.DataFrame(optimal_squad)
         
-        return {"status": "success", "squad": optimal_squad}
+        def get_legal_xi(s):
+            s['xp'] = s['proj'].apply(lambda x: x.get(target_gw, x.get(str(target_gw), 0)))
+            s = s.sort_values(by='xp', ascending=False)
+            
+            xi, bench = [], []
+            counts = {"GK": 0, "DEF": 0, "MID": 0, "FWD": 0}
+            
+            for _, row in s.iterrows():
+                pos = row['position']
+                if pos == "GK" and counts["GK"] == 1:
+                    bench.append(row); continue
+                if pos == "DEF" and counts["DEF"] == 5:
+                    bench.append(row); continue
+                if pos == "MID" and counts["MID"] == 5:
+                    bench.append(row); continue
+                if pos == "FWD" and counts["FWD"] == 3:
+                    bench.append(row); continue
+                
+                xi.append(row)
+                counts[pos] += 1
+                if len(xi) == 11: break
+            
+            for _, row in s.iterrows():
+                if not any(row['id'] == p['id'] for p in xi) and not any(row['id'] == p['id'] for p in bench):
+                    bench.append(row)
+                    
+            bench_gk = [p for p in bench if p['position'] == 'GK']
+            bench_out = sorted([p for p in bench if p['position'] != 'GK'], key=lambda x: x['xp'], reverse=True)
+            return xi, bench_gk + bench_out
+
+        starting_11, bench = get_legal_xi(squad_df)
+        
+        return {
+            "status": "success", 
+            "current_gw": target_gw,
+            "starting_11": starting_11, 
+            "bench": bench
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
