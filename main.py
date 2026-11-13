@@ -202,7 +202,6 @@ def captain_choice(xi):
     return (ranked.iloc[0]["name"], ranked.iloc[1]["name"], float(ranked.iloc[0]["GWProjection"]))
 
 def apply_manual_transfers(df, owned, bank10, manual_transfers):
-    # Applies manual transfers to the owned dictionary and bank
     player_db = {p["name"].lower(): p for _, p in df.iterrows()}
     
     for t in manual_transfers:
@@ -239,7 +238,6 @@ def optimize_team(req: OptimizeRequest):
         df = calculate_projections(bootstrap, fixtures, owned, target_gw)
         bank10 = int(picks.get("entry_history", {}).get("bank", 0))
         
-        # Apply manual transfers
         owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
         current_ids = list(owned.keys())
         
@@ -291,7 +289,6 @@ def get_chips(req: OptimizeRequest):
         df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=9)
         bank10 = int(picks.get("entry_history", {}).get("bank", 0))
         
-        # Apply manual transfers
         owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
         current_ids = list(owned.keys())
         
@@ -346,5 +343,14 @@ def get_teams():
         bootstrap = api_get("bootstrap-static/")
         teams = [{"id": t["id"], "name": t["name"], "code": t["code"]} for t in bootstrap["teams"]]
         return {"status": "success", "teams": teams}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/players")
+def get_players():
+    try:
+        bootstrap = api_get("bootstrap-static/")
+        players = sorted(list(set([p["web_name"] for p in bootstrap["elements"]])))
+        return {"status": "success", "players": players}
     except Exception as e:
         return {"error": str(e)}
