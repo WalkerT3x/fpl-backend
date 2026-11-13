@@ -1,0 +1,22 @@
+{
+  "Arsenal": {"code": 3},
+  "Aston Villa": {"code": 7},
+  "Bournemouth": {"code": 4},
+  "Brentford": {"code": 94},
+  "Brighton": {"code": 36},
+  "Chelsea": {"code": 8},
+  "Crystal Palace": {"code": 31},
+  "Everton": {"code": 11},
+  "Fulham": {"code": 54},
+  "Ipswich Town": {"code": 40},
+  "Leeds": {"code": 2},
+  "Leicester City": {"code": 13},
+  "Liverpool": {"code": 14},
+  "Man City": {"code": 43},
+  "Man Utd": {"code": 1},
+  "Newcastle": {"code": 4},
+  "Nott'm Forest": {"code": 17},
+  "Southampton": {"code": 20},
+  "Spurs": {"code": 6},
+  "West Ham": {"code": 21}
+}
