@@ -108,7 +108,6 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             labels = [("H " if fx["home"] else "A ") + teams_short.get(fx["opp"], str(fx["opp"])) for fx in fx_list]
             fixtures_text[str(gw)] = " / ".join(labels)
 
-        # THE FIX: Base for outfield, _1 for Goalkeepers
         if pos == "GK":
             shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}_1-110.png"
         else:
@@ -216,26 +215,69 @@ def get_chips(team_id: int):
         picks = api_get(f"entry/{team_id}/event/{picks_gw}/picks/")
         owned = {p['element']: {"selling_price": 0} for p in picks['picks']}
         
-        df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=8)
+        # Calculate projections up to GW19 for the whole game
+        df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=9)
         budget = (sum(df[df["id"].isin(owned)]["price"]) + (picks['entry_history']['bank'] / 10.0))
         
-        fh_squad = run_optimizer(df, budget, target_gw, 15, [], [], force_unlimited=True)
-        fh_xi, fh_bench = get_legal_xi(fh_squad, target_gw)
+        current_squad = df[df['id'].isin(owned)]
         
-        wc_squad = run_optimizer(df, budget, target_gw, 15, [], [], force_unlimited=True)
-        wc_xi, wc_bench = get_legal_xi(wc_squad, target_gw)
+        # --- RESTORING THE GRADIO BRAIN LOGIC ---
+        weeks = list(range(target_gw, 20))
+        
+        weekly_stats = {}
+        for gw in weeks:
+            # Simulate current squad
+            xi, bench, xi_points = get_legal_xi(current_squad, gw)
+            bench_points = sum(p['proj'].get(str(gw), 0) for p in bench)
+            cap_points = xi[0]['proj'].get(str(gw), 0) if xi else 0
+            cap_name = xi[0]['name'] if xi else ""
+            
+            weekly_stats[gw] = {
+                "bb": bench_points,
+                "tc": cap_points,
+                "captain": cap_name,
+                "xi": xi_points
+            }
+
+        # Find best weeks based on ACTUAL projected points
+        best_bb_gw = max(weeks, key=lambda g: weekly_stats[g]["bb"])
+        best_tc_gw = max(weeks, key=lambda g: weekly_stats[g]["tc"])
+        
+        # Free Hit simulation: Run optimizer for every week to find biggest XI upgrade
+        best_fh_gw = target_gw
+        best_fh_gain = -999
+        fh_squad_data = None
+        
+        for gw in weeks:
+            try:
+                # Get best possible 15 for this specific week
+                sim_squad = run_optimizer(df, budget, gw, 15, [], [], force_unlimited=True)
+                sim_xi, sim_bench = get_legal_xi(sim_squad, gw)
+                sim_points = sum(p['proj'].get(str(gw), 0) for p in sim_xi)
+                
+                gain = sim_points - weekly_stats[gw]["xi"]
+                if gain > best_fh_gain:
+                    best_fh_gain = gain
+                    best_fh_gw = gw
+                    fh_squad_data = {"starting_11": sim_xi, "bench": sim_bench}
+            except:
+                continue
+
+        # If FH simulation failed, fallback to target_gw
+        if fh_squad_data is None:
+             fh_squad_data = {"starting_11": [], "bench": []}
 
         return {
             "status": "success",
             "current_gw": target_gw,
             "chip_advice": {
-                "bench_boost": {"gw": target_gw, "reason": "Easiest projected bench fixtures."},
-                "triple_captain": {"gw": target_gw, "reason": "Highest projected ceiling for premium assets."},
-                "free_hit": {"gw": target_gw, "reason": "Toughest projected fixtures for current squad."},
-                "wildcard": {"gw": target_gw, "reason": "Major fixture swing."}
+                "bench_boost": {"gw": best_bb_gw, "reason": f"Highest projected bench points ({weekly_stats[best_bb_gw]['bb']:.1f} pts)."},
+                "triple_captain": {"gw": best_tc_gw, "reason": f"Best fixture for {weekly_stats[best_tc_gw]['captain']} ({weekly_stats[best_tc_gw]['tc']:.1f} pts)."},
+                "free_hit": {"gw": best_fh_gw, "reason": f"Biggest upgrade to your starting 11 (+{best_fh_gain:.1f} pts)."},
+                "wildcard": {"gw": best_fh_gw, "reason": "Major fixture swing to restructure your squad."}
             },
-            "free_hit_team": {"starting_11": fh_xi, "bench": fh_bench},
-            "wildcard_team": {"starting_11": wc_xi, "bench": wc_bench}
+            "free_hit_team": fh_squad_data,
+            "wildcard_team": fh_squad_data 
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
