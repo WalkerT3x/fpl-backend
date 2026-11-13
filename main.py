@@ -5,7 +5,6 @@ import requests
 import pandas as pd
 import pulp
 import uvicorn
-import json
 
 app = FastAPI(title="FPL Genius API")
 
@@ -22,10 +21,6 @@ SQUAD_COUNTS = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
 GOAL_POINTS = {"GK": 6, "DEF": 6, "MID": 5, "FWD": 4}
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "FPL-Genius-API/1.0"})
-
-# Load the kit database
-with open("kits.json", "r") as f:
-    TEAM_KITS = json.load(f)
 
 class Transfer(BaseModel):
     out_player: str
@@ -56,6 +51,7 @@ def get_gws(events):
 
 def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
     teams_short = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
+    teams_code = {t["id"]: t["code"] for t in bootstrap["teams"]} # <--- GETS THE REAL TEAM CODE
     completed_gws = sum(1 for e in bootstrap["events"] if e.get("finished"))
     
     fmap = {}
@@ -95,6 +91,7 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
         min_factor = (min(1.0, exp_mins / 80.0)) * avail
 
         team_name = next((t["name"] for t in bootstrap["teams"] if t["id"] == p["team"]), "")
+        team_code = teams_code.get(p["team"], 0)
         
         projections = {}
         fixtures_text = {}
@@ -111,15 +108,10 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             labels = [("H " if fx["home"] else "A ") + teams_short.get(fx["opp"], str(fx["opp"])) for fx in fx_list]
             fixtures_text[str(gw)] = " / ".join(labels)
 
-        is_home = fixtures_text.get(str(target_gw), "H").startswith("H")
-        team_code = TEAM_KITS.get(team_name, {}).get("code", 0)
-        
-        # BUILD THE EXACT SHIRT URL
-        if pos == "GK":
-            shirt_url = "https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_1_1-110.png"
-        else:
-            kit_type = "1" if is_home else "2"
-            shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}_{kit_type}-110.png"
+        # --- EXACT KIT LOGIC ---
+        # 1 = Home, 4 = Goalkeeper
+        kit_type = "4" if pos == "GK" else "1"
+        shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}_{kit_type}-110.png"
 
         rows.append({
             "id": int(p["id"]), 
