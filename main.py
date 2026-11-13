@@ -273,10 +273,14 @@ def get_chips(req: OptimizeRequest):
         history = api_get(f"entry/{req.team_id}/history/")
         picks_gw, target_gw = get_gws(bootstrap["events"])
         
-        used_chips = []
+        # EXTRACT USED CHIPS AND THEIR GAMEWEEKS
+        used_chips_dict = {}
         if "chips" in history:
-            used_chips = [c["name"].upper() for c in history["chips"]]
-            used_chips = ["WC" if c == "WILDCARD" else "FH" if c == "FREEHIT" else "BB" if c == "BBOOST" else "TC" if c == "3XC" else c for c in used_chips]
+            for c in history["chips"]:
+                name = c["name"].upper()
+                gw = c["event"]
+                abbr = "WC" if name == "WILDCARD" else "FH" if name == "FREEHIT" else "BB" if name == "BBOOST" else "TC" if name == "3XC" else name
+                used_chips_dict[abbr] = gw
 
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
         
@@ -325,7 +329,7 @@ def get_chips(req: OptimizeRequest):
         
         wc_values = {}
         for gw in weeks:
-            if gw == best_fh_gw: continue
+            if gw == best_fh_gw: continue 
             try:
                 wc_squad = solve_squad(df, budget10=budget10, target_gw=gw, horizon=3, objective="horizon", current_ids=set(), force_free_hit=True)
                 wc_xi, _, wc_points = best_legal_xi(wc_squad, gw)
@@ -341,10 +345,10 @@ def get_chips(req: OptimizeRequest):
             "status": "success",
             "current_gw": target_gw,
             "chip_advice": {
-                "bench_boost": {"gw": best_bb_gw, "reason": f"Highest projected bench points ({weekly[best_bb_gw]['bb']:.1f} pts).", "used": "BB" in used_chips},
-                "triple_captain": {"gw": best_tc_gw, "reason": f"Highest projected captain points: {weekly[best_tc_gw]['captain']} ({weekly[best_tc_gw]['tc']:.1f} pts).", "used": "TC" in used_chips},
-                "free_hit": {"gw": best_fh_gw, "reason": f"Biggest upgrade to your starting 11 (+{fh_values[best_fh_gw]:.1f} pts).", "used": "FH" in used_chips},
-                "wildcard": {"gw": best_wc_gw, "reason": "Major fixture swing to restructure.", "used": "WC" in used_chips}
+                "bench_boost": {"gw": best_bb_gw, "reason": f"Highest projected bench points ({weekly[best_bb_gw]['bb']:.1f} pts).", "used": "BB" in used_chips_dict, "used_gw": used_chips_dict.get("BB")},
+                "triple_captain": {"gw": best_tc_gw, "reason": f"Highest projected captain points: {weekly[best_tc_gw]['captain']} ({weekly[best_tc_gw]['tc']:.1f} pts).", "used": "TC" in used_chips_dict, "used_gw": used_chips_dict.get("TC")},
+                "free_hit": {"gw": best_fh_gw, "reason": f"Biggest upgrade to your starting 11 (+{fh_values[best_fh_gw]:.1f} pts).", "used": "FH" in used_chips_dict, "used_gw": used_chips_dict.get("FH")},
+                "wildcard": {"gw": best_wc_gw, "reason": "Major fixture swing to restructure.", "used": "WC" in used_chips_dict, "used_gw": used_chips_dict.get("WC")}
             },
             "free_hit_team": {"starting_11": fh_xi.to_dict(orient="records"), "bench": fh_bench.to_dict(orient="records")}
         }
