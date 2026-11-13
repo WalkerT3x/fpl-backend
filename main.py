@@ -104,7 +104,7 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
                 continue
             
             fx_factor = sum(max(0.78, min(1.22, 1.0 + (3.0 - fx["diff"]) * 0.075)) * (1.025 if fx["home"] else 1) for fx in fx_list) / len(fx_list)
-            projections[str(gw)] = round(max(0, base_ppg * min_factor * fx_factor), 2)
+            projections[str(gw)] = max(0, base_ppg * min_factor * fx_factor)
             
             labels = [("H " if fx["home"] else "A ") + teams_short.get(fx["opp"], str(fx["opp"])) for fx in fx_list]
             fixtures_text[str(gw)] = " / ".join(labels)
@@ -201,6 +201,24 @@ def captain_choice(xi):
     ranked = xi.sort_values("GWProjection", ascending=False)
     return (ranked.iloc[0]["name"], ranked.iloc[1]["name"], float(ranked.iloc[0]["GWProjection"]))
 
+def apply_manual_transfers(df, owned, bank10, manual_transfers):
+    # Applies manual transfers to the owned dictionary and bank
+    player_db = {p["name"].lower(): p for _, p in df.iterrows()}
+    
+    for t in manual_transfers:
+        out_p = player_db.get(t.out_player.lower())
+        in_p = player_db.get(t.in_player.lower())
+        
+        if out_p is not None and in_p is not None and out_p["id"] in owned:
+            out_id, in_id = out_p["id"], in_p["id"]
+            bank10 += owned[out_id]["selling_price"]
+            del owned[out_id]
+            cost = in_p["price10"]
+            bank10 -= cost
+            owned[in_id] = {"selling_price": cost}
+            
+    return owned, bank10
+
 @app.post("/api/optimize")
 def optimize_team(req: OptimizeRequest):
     try:
@@ -210,7 +228,6 @@ def optimize_team(req: OptimizeRequest):
         
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
         
-        # Exact money logic from Gradio
         player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
         owned = {}
         for p in picks["picks"]:
@@ -220,14 +237,19 @@ def optimize_team(req: OptimizeRequest):
             owned[pid] = {"selling_price": sp}
 
         df = calculate_projections(bootstrap, fixtures, owned, target_gw)
-        selling_value10 = sum(owned[player_id]["selling_price"] for player_id in owned)
-        bank = int(picks.get("entry_history", {}).get("bank", 0))
-        budget10 = selling_value10 + bank
+        bank10 = int(picks.get("entry_history", {}).get("bank", 0))
         
-        current_squad = df[df['id'].isin(owned)].copy()
+        # Apply manual transfers
+        owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
+        current_ids = list(owned.keys())
+        
+        selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
+        budget10 = selling_value10 + bank10
+        
+        current_squad = df[df['id'].isin(current_ids)].copy()
         if len(current_squad) != 15: raise ValueError("Could not retrieve all 15 players from your existing squad.")
 
-        new_squad = solve_squad(df, budget10, target_gw, horizon=5, max_transfers=req.free_transfers, current_ids=list(owned.keys()), objective="horizon")
+        new_squad = solve_squad(df, budget10, target_gw, horizon=5, max_transfers=req.free_transfers, current_ids=current_ids, objective="horizon")
         
         proposed_xi, proposed_bench, proposed_points = best_legal_xi(new_squad, target_gw)
         captain, vice, _ = captain_choice(proposed_xi)
@@ -243,12 +265,12 @@ def optimize_team(req: OptimizeRequest):
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
 
-@app.get("/api/chips/{team_id}")
-def get_chips(team_id: int):
+@app.post("/api/chips")
+def get_chips(req: OptimizeRequest):
     try:
         bootstrap = api_get("bootstrap-static/")
         fixtures = api_get("fixtures/")
-        history = api_get(f"entry/{team_id}/history/")
+        history = api_get(f"entry/{req.team_id}/history/")
         picks_gw, target_gw = get_gws(bootstrap["events"])
         
         used_chips = []
@@ -256,7 +278,7 @@ def get_chips(team_id: int):
             used_chips = [c["name"].upper() for c in history["chips"]]
             used_chips = ["WC" if c == "WILDCARD" else "FH" if c == "FREEHIT" else "BB" if c == "BBOOST" else "TC" if c == "3XC" else c for c in used_chips]
 
-        picks = api_get(f"entry/{team_id}/event/{picks_gw}/picks/")
+        picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
         
         player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
         owned = {}
@@ -267,12 +289,16 @@ def get_chips(team_id: int):
             owned[pid] = {"selling_price": sp}
 
         df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=9)
-        selling_value10 = sum(owned[player_id]["selling_price"] for player_id in owned)
-        bank = int(picks.get("entry_history", {}).get("bank", 0))
-        budget10 = selling_value10 + bank
-        current_squad = df[df['id'].isin(owned)].copy()
+        bank10 = int(picks.get("entry_history", {}).get("bank", 0))
         
-        # EXACT GRADIO CHIP LOGIC
+        # Apply manual transfers
+        owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
+        current_ids = list(owned.keys())
+        
+        selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
+        budget10 = selling_value10 + bank10
+        current_squad = df[df['id'].isin(current_ids)].copy()
+        
         weeks = list(range(target_gw, 20))
         if not weeks: raise ValueError("No remaining gameweeks.")
 
