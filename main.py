@@ -5,6 +5,7 @@ import requests
 import pandas as pd
 import pulp
 import uvicorn
+import json
 
 app = FastAPI(title="FPL Genius API")
 
@@ -21,6 +22,10 @@ SQUAD_COUNTS = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
 GOAL_POINTS = {"GK": 6, "DEF": 6, "MID": 5, "FWD": 4}
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "FPL-Genius-API/1.0"})
+
+# Load the correct kit database
+with open("kits.json", "r") as f:
+    TEAM_KITS = json.load(f)
 
 class Transfer(BaseModel):
     out_player: str
@@ -51,8 +56,6 @@ def get_gws(events):
 
 def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
     teams_short = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
-    # THIS IS THE FIX: We grab the official team code directly from the API
-    teams_code = {t["id"]: t["code"] for t in bootstrap["teams"]}
     completed_gws = sum(1 for e in bootstrap["events"] if e.get("finished"))
     
     fmap = {}
@@ -92,7 +95,6 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
         min_factor = (min(1.0, exp_mins / 80.0)) * avail
 
         team_name = next((t["name"] for t in bootstrap["teams"] if t["id"] == p["team"]), "")
-        team_code = teams_code.get(p["team"], 0)
         
         projections = {}
         fixtures_text = {}
@@ -109,9 +111,10 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             labels = [("H " if fx["home"] else "A ") + teams_short.get(fx["opp"], str(fx["opp"])) for fx in fx_list]
             fixtures_text[str(gw)] = " / ".join(labels)
 
-        # DYNAMIC SHIRT LOGIC: _1 for outfield, _4 for keepers
-        kit_type = "4" if pos == "GK" else "1"
-        shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}_{kit_type}-110.png"
+        # USE THE EXACT IDS FROM THE JSON FILE
+        team_kits = TEAM_KITS.get(team_name, {"home": "0", "gk": "0"})
+        kit_id = team_kits["gk"] if pos == "GK" else team_kits["home"]
+        shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{kit_id}-110.png"
 
         rows.append({
             "id": int(p["id"]), 
