@@ -6,6 +6,7 @@ import pandas as pd
 import pulp
 import uvicorn
 import json
+import os
 
 app = FastAPI(title="FPL Genius API")
 
@@ -23,9 +24,36 @@ GOAL_POINTS = {"GK": 6, "DEF": 6, "MID": 5, "FWD": 4}
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "FPL-Genius-API/1.0"})
 
-# Load the correct kit database
-with open("kits.json", "r") as f:
-    TEAM_KITS = json.load(f)
+# SAFETY NET: Try to load kits.json, otherwise use a default
+try:
+    with open("kits.json", "r") as f:
+        TEAM_KITS = json.load(f)
+    print("Successfully loaded kits.json")
+except Exception as e:
+    print(f"Warning: Could not load kits.json: {e}. Using default fallback.")
+    TEAM_KITS = {
+        "Arsenal": {"home": "3", "gk": "60"},
+        "Aston Villa": {"home": "7", "gk": "58"},
+        "Bournemouth": {"home": "91", "gk": "23"},
+        "Brentford": {"home": "94", "gk": "96"},
+        "Brighton": {"home": "36", "gk": "92"},
+        "Chelsea": {"home": "8", "gk": "19"},
+        "Crystal Palace": {"home": "31", "gk": "33"},
+        "Everton": {"home": "11", "gk": "13"},
+        "Fulham": {"home": "54", "gk": "56"},
+        "Ipswich Town": {"home": "40", "gk": "42"},
+        "Leeds": {"home": "2", "gk": "4"},
+        "Leicester City": {"home": "13", "gk": "15"},
+        "Liverpool": {"home": "14", "gk": "16"},
+        "Man City": {"home": "43", "gk": "45"},
+        "Man Utd": {"home": "1", "gk": "3"},
+        "Newcastle": {"home": "4", "gk": "5"},
+        "Nott'm Forest": {"home": "17", "gk": "19"},
+        "Southampton": {"home": "20", "gk": "22"},
+        "Spurs": {"home": "6", "gk": "7"},
+        "West Ham": {"home": "21", "gk": "23"},
+        "Wolves": {"home": "39", "gk": "41"}
+    }
 
 class Transfer(BaseModel):
     out_player: str
@@ -111,7 +139,6 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             labels = [("H " if fx["home"] else "A ") + teams_short.get(fx["opp"], str(fx["opp"])) for fx in fx_list]
             fixtures_text[str(gw)] = " / ".join(labels)
 
-        # USE THE EXACT IDS FROM THE JSON FILE
         team_kits = TEAM_KITS.get(team_name, {"home": "0", "gk": "0"})
         kit_id = team_kits["gk"] if pos == "GK" else team_kits["home"]
         shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{kit_id}-110.png"
