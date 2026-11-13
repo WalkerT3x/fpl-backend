@@ -5,6 +5,7 @@ import requests
 import pandas as pd
 import pulp
 import uvicorn
+import traceback
 
 app = FastAPI(title="FPL Genius API")
 
@@ -55,7 +56,6 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
     completed_gws = sum(1 for e in bootstrap["events"] if e.get("finished"))
     
     fmap = {}
-    fdr_map = {}
     for f in fixtures:
         if not f.get("event"): continue
         gw = f["event"]
@@ -65,8 +65,6 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
         fmap.setdefault(gw, {}).setdefault(f["team_a"], []).append({
             "opp": f["team_h"], "diff": safe_float(f.get("team_a_difficulty"), 3), "home": False
         })
-        fdr_map.setdefault(gw, {})[f["team_h"]] = safe_float(f.get("team_h_difficulty"), 3)
-        fdr_map.setdefault(gw, {})[f["team_a"]] = safe_float(f.get("team_a_difficulty"), 3)
 
     rows = []
     for p in bootstrap["elements"]:
@@ -98,11 +96,8 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
         
         projections = {}
         fixtures_text = {}
-        player_fdrs = {}
         for gw in range(target_gw, target_gw + horizon):
             fx_list = fmap.get(gw, {}).get(p["team"], [])
-            player_fdrs[str(gw)] = fdr_map.get(gw, {}).get(p["team"], 3)
-            
             if not fx_list:
                 projections[str(gw)] = 0
                 fixtures_text[str(gw)] = "Blank"
@@ -128,7 +123,7 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             "team_id": int(p["team"]), "position": pos, "price": p["now_cost"] / 10.0,
             "points": int(p.get("total_points", 0)), "status": p.get("status", "a"),
             "owned": int(is_owned), "sell_price": owned.get(p["id"], {}).get("selling_price", p["now_cost"]) / 10.0,
-            "proj": projections, "fixtures": fixtures_text, "fdr": player_fdrs
+            "proj": projections, "fixtures": fixtures_text
         })
 
     return pd.DataFrame(rows)
@@ -209,7 +204,7 @@ def optimize_team(req: OptimizeRequest):
         
         return {"status": "success", "current_gw": target_gw, "starting_11": starting_11, "bench": bench}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 @app.get("/api/chips/{team_id}")
 def get_chips(team_id: int):
@@ -225,36 +220,35 @@ def get_chips(team_id: int):
         budget = (sum(df[df["id"].isin(owned)]["price"]) + (picks['entry_history']['bank'] / 10.0))
         
         current_squad = df[df['id'].isin(owned)]
+        if len(current_squad) != 15:
+            raise ValueError("Could not retrieve all 15 players for your squad.")
+            
+        weeks = list(range(target_gw, 20))
         
-        best_bb_gw, best_bb_fdr = target_gw, 99
-        best_fh_gw, best_fh_fdr = target_gw, -1
-        best_tc_gw, best_tc_fdr = target_gw, 99
-        
-        best_player = current_squad.sort_values(by='points', ascending=False).iloc[0]
-        best_player_name = best_player['name']
-        
-        for gw in range(target_gw, 20):
+        # Calculate xP for current squad
+        weekly_xp = {}
+        for gw in weeks:
             gw_str = str(gw)
-            try:
-                avg_fdr = current_squad['fdr'].apply(lambda x: x.get(gw_str, 3) if isinstance(x, dict) else 3).mean()
-                tc_fdr = best_player['fdr'].get(gw_str, 3) if isinstance(best_player['fdr'], dict) else 3
-            except:
-                avg_fdr = 3
-                tc_fdr = 3
+            total_xp = 0
+            
+            xi, bench, _ = get_legal_xi(current_squad, gw)
+            for p in xi:
+                total_xp += p['proj'].get(gw_str, 0)
+            bench_xp = sum(p['proj'].get(gw_str, 0) for p in bench)
+            best_player_xp = max([p['proj'].get(gw_str, 0) for p in xi]) if xi else 0
+            
+            weekly_xp[gw] = {
+                "xi_xp": total_xp, 
+                "bench_xp": bench_xp,
+                "tc_xp": best_player_xp
+            }
 
-            if avg_fdr < best_bb_fdr:
-                best_bb_fdr = avg_fdr
-                best_bb_gw = gw
-                
-            if avg_fdr > best_fh_fdr:
-                best_fh_fdr = avg_fdr
-                best_fh_gw = gw
-                
-            if tc_fdr < best_tc_fdr:
-                best_tc_fdr = tc_fdr
-                best_tc_gw = gw
+        best_bb_gw = max(weeks, key=lambda g: weekly_xp[g]["bench_xp"])
+        best_tc_gw = max(weeks, key=lambda g: weekly_xp[g]["tc_xp"])
+        best_fh_gw = min(weeks, key=lambda g: weekly_xp[g]["xi_xp"])
         
-        # We only run the heavy optimizer ONCE for the best FH week to prevent timeouts
+        best_tc_player = current_squad.sort_values(by='points', ascending=False).iloc[0]['name']
+
         fh_squad = run_optimizer(df, budget, best_fh_gw, 15, [], [], force_unlimited=True)
         fh_xi, fh_bench = get_legal_xi(fh_squad, best_fh_gw)
         
@@ -262,15 +256,15 @@ def get_chips(team_id: int):
             "status": "success",
             "current_gw": target_gw,
             "chip_advice": {
-                "bench_boost": {"gw": best_bb_gw, "reason": f"Easiest fixtures for your bench (Avg FDR: {best_bb_fdr:.2f})."},
-                "triple_captain": {"gw": best_tc_gw, "reason": f"Best fixture for {best_player_name} (FDR: {best_tc_fdr})."},
-                "free_hit": {"gw": best_fh_gw, "reason": f"Toughest fixtures for your squad (Avg FDR: {best_fh_fdr:.2f})."},
+                "bench_boost": {"gw": best_bb_gw, "reason": f"Highest projected bench points ({weekly_xp[best_bb_gw]['bench_xp']:.1f} pts)."},
+                "triple_captain": {"gw": best_tc_gw, "reason": f"Best projected fixture for {best_tc_player} ({weekly_xp[best_tc_gw]['tc_xp']:.1f} pts)."},
+                "free_hit": {"gw": best_fh_gw, "reason": f"Weakest projected fixtures for your squad ({weekly_xp[best_fh_gw]['xi_xp']:.1f} pts)."},
                 "wildcard": {"gw": best_fh_gw, "reason": "Major fixture swing to restructure."}
             },
             "free_hit_team": {"starting_11": fh_xi, "bench": fh_bench}
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 @app.get("/api/teams")
 def get_teams():
@@ -279,7 +273,4 @@ def get_teams():
         teams = [{"id": t["id"], "name": t["name"], "code": t["code"]} for t in bootstrap["teams"]]
         return {"status": "success", "teams": teams}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        return {"error": str(e)}
