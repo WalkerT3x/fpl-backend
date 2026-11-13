@@ -108,9 +108,8 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             labels = [("H " if fx["home"] else "A ") + teams_short.get(fx["opp"], str(fx["opp"])) for fx in fx_list]
             fixtures_text[str(gw)] = " / ".join(labels)
 
-        # Outfield = Base URL, GK = _1 (Tester will verify)
         if pos == "GK":
-            shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}_1-110.png"
+            shirt_url = "https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_0_1-110.png"
         else:
             shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}-110.png"
 
@@ -240,7 +239,6 @@ def get_chips(team_id: int):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# --- THE NEW BRIDGE ENDPOINT ---
 @app.get("/api/teams")
 def get_teams():
     try:
