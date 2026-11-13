@@ -120,9 +120,10 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             "shirt_url": shirt_url,
             "name": p["web_name"], 
             "team": team_name,
-            "team_id": int(p["team"]), "position": pos, "price": p["now_cost"] / 10.0,
+            "team_id": int(p["team"]), "position": pos, 
+            "price10": int(p["now_cost"]),
+            "sell_price10": int(owned.get(p["id"], {}).get("selling_price", p["now_cost"])),
             "points": int(p.get("total_points", 0)), "status": p.get("status", "a"),
-            "owned": int(is_owned), "sell_price": owned.get(p["id"], {}).get("selling_price", p["now_cost"]) / 10.0,
             "proj": projections, "fixtures": fixtures_text
         })
 
@@ -150,7 +151,7 @@ def solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_
     costs = {}
     for i in indices:
         player_id = int(df.loc[i, "id"])
-        costs[i] = int(df.loc[i, "sell_price"]) if player_id in current_ids else int(df.loc[i, "price"])
+        costs[i] = int(df.loc[i, "sell_price10"]) if player_id in current_ids else int(df.loc[i, "price10"])
 
     prob += pulp.lpSum(x[i] * costs[i] for i in indices) <= int(budget10)
 
@@ -160,7 +161,7 @@ def solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_
     prob.solve(pulp.HiGHS(msg=False))
     chosen = [i for i in indices if pulp.value(x[i]) is not None and pulp.value(x[i]) > 0.5]
 
-    if len(chosen) != 15: raise ValueError("No legal squad found.")
+    if len(chosen) != 15: raise ValueError("No legal squad found. Check your budget and transfers.")
     return df.loc[chosen].copy()
 
 def best_legal_xi(squad, gw):
@@ -208,10 +209,20 @@ def optimize_team(req: OptimizeRequest):
         picks_gw, target_gw = get_gws(bootstrap["events"])
         
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
-        owned = {p['element']: {"selling_price": 0} for p in picks['picks']}
         
+        # Exact money logic from Gradio
+        player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
+        owned = {}
+        for p in picks["picks"]:
+            pid = p["element"]
+            sp = p.get("selling_price")
+            if not sp: sp = player_costs.get(pid, 0)
+            owned[pid] = {"selling_price": sp}
+
         df = calculate_projections(bootstrap, fixtures, owned, target_gw)
-        budget10 = (sum(df[df["id"].isin(owned)]["sell_price"]) + (picks['entry_history']['bank'] / 10.0))
+        selling_value10 = sum(owned[player_id]["selling_price"] for player_id in owned)
+        bank = int(picks.get("entry_history", {}).get("bank", 0))
+        budget10 = selling_value10 + bank
         
         current_squad = df[df['id'].isin(owned)].copy()
         if len(current_squad) != 15: raise ValueError("Could not retrieve all 15 players from your existing squad.")
@@ -240,17 +251,25 @@ def get_chips(team_id: int):
         history = api_get(f"entry/{team_id}/history/")
         picks_gw, target_gw = get_gws(bootstrap["events"])
         
-        # Detect used chips
         used_chips = []
         if "chips" in history:
             used_chips = [c["name"].upper() for c in history["chips"]]
             used_chips = ["WC" if c == "WILDCARD" else "FH" if c == "FREEHIT" else "BB" if c == "BBOOST" else "TC" if c == "3XC" else c for c in used_chips]
 
         picks = api_get(f"entry/{team_id}/event/{picks_gw}/picks/")
-        owned = {p['element']: {"selling_price": 0} for p in picks['picks']}
         
+        player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
+        owned = {}
+        for p in picks["picks"]:
+            pid = p["element"]
+            sp = p.get("selling_price")
+            if not sp: sp = player_costs.get(pid, 0)
+            owned[pid] = {"selling_price": sp}
+
         df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=9)
-        budget10 = (sum(df[df["id"].isin(owned)]["sell_price"]) + (picks['entry_history']['bank'] / 10.0))
+        selling_value10 = sum(owned[player_id]["selling_price"] for player_id in owned)
+        bank = int(picks.get("entry_history", {}).get("bank", 0))
+        budget10 = selling_value10 + bank
         current_squad = df[df['id'].isin(owned)].copy()
         
         # EXACT GRADIO CHIP LOGIC
@@ -278,7 +297,6 @@ def get_chips(team_id: int):
         best_tc_gw = best_week({g: weekly[g]["tc"] for g in weeks})
         best_fh_gw = best_week(fh_values)
         
-        # Build the best FH squad to display
         fh_squad = solve_squad(df, budget10=budget10, target_gw=best_fh_gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
         fh_xi, fh_bench, _ = best_legal_xi(fh_squad, best_fh_gw)
 
