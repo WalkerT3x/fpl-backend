@@ -224,14 +224,15 @@ def get_chips(team_id: int):
             raise ValueError("Could not retrieve all 15 players for your squad.")
             
         weeks = list(range(target_gw, 20))
-        
-        # Calculate xP for current squad
         weekly_xp = {}
+        
         for gw in weeks:
             gw_str = str(gw)
             total_xp = 0
             
-            xi, bench, _ = get_legal_xi(current_squad, gw)
+            # FIXED: Changed from "xi, bench, _ =" to "xi, bench ="
+            xi, bench = get_legal_xi(current_squad, gw)
+            
             for p in xi:
                 total_xp += p['proj'].get(gw_str, 0)
             bench_xp = sum(p['proj'].get(gw_str, 0) for p in bench)
