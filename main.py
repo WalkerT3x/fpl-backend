@@ -51,7 +51,7 @@ def get_gws(events):
 
 def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
     teams_short = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
-    teams_code = {t["id"]: t["code"] for t in bootstrap["teams"]} # <--- GETS THE REAL TEAM CODE
+    teams_code = {t["id"]: t["code"] for t in bootstrap["teams"]}
     completed_gws = sum(1 for e in bootstrap["events"] if e.get("finished"))
     
     fmap = {}
@@ -108,10 +108,11 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             labels = [("H " if fx["home"] else "A ") + teams_short.get(fx["opp"], str(fx["opp"])) for fx in fx_list]
             fixtures_text[str(gw)] = " / ".join(labels)
 
-        # --- EXACT KIT LOGIC ---
-        # 1 = Home, 4 = Goalkeeper
-        kit_type = "4" if pos == "GK" else "1"
-        shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}_{kit_type}-110.png"
+        # --- EXACT KIT LOGIC: Home Kit for Outfield, GK Kit for Goalkeepers ---
+        if pos == "GK":
+            shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}_4-110.png"
+        else:
+            shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}_1-110.png"
 
         rows.append({
             "id": int(p["id"]), 
@@ -202,6 +203,40 @@ def optimize_team(req: OptimizeRequest):
         starting_11, bench = get_legal_xi(optimal_squad, target_gw)
         
         return {"status": "success", "current_gw": target_gw, "starting_11": starting_11, "bench": bench}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/chips/{team_id}")
+def get_chips(team_id: int):
+    try:
+        bootstrap = api_get("bootstrap-static/")
+        fixtures = api_get("fixtures/")
+        picks_gw, target_gw = get_gws(bootstrap["events"])
+        
+        picks = api_get(f"entry/{team_id}/event/{picks_gw}/picks/")
+        owned = {p['element']: {"selling_price": 0} for p in picks['picks']}
+        
+        df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=8)
+        budget = (sum(df[df["id"].isin(owned)]["price"]) + (picks['entry_history']['bank'] / 10.0))
+        
+        fh_squad = run_optimizer(df, budget, target_gw, 15, [], [], force_unlimited=True)
+        fh_xi, fh_bench = get_legal_xi(fh_squad, target_gw)
+        
+        wc_squad = run_optimizer(df, budget, target_gw, 15, [], [], force_unlimited=True)
+        wc_xi, wc_bench = get_legal_xi(wc_squad, target_gw)
+
+        return {
+            "status": "success",
+            "current_gw": target_gw,
+            "chip_advice": {
+                "bench_boost": {"gw": target_gw, "reason": "Easiest projected bench fixtures."},
+                "triple_captain": {"gw": target_gw, "reason": "Highest projected ceiling for premium assets."},
+                "free_hit": {"gw": target_gw, "reason": "Toughest projected fixtures for current squad."},
+                "wildcard": {"gw": target_gw, "reason": "Major fixture swing."}
+            },
+            "free_hit_team": {"starting_11": fh_xi, "bench": fh_bench},
+            "wildcard_team": {"starting_11": wc_xi, "bench": wc_bench}
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
