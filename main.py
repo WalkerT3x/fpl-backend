@@ -22,6 +22,31 @@ GOAL_POINTS = {"GK": 6, "DEF": 6, "MID": 5, "FWD": 4}
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "FPL-Genius-API/1.0"})
 
+# --- THE KIT DATABASE ---
+# Maps the exact team names from the FPL API to their correct Kit IDs
+TEAM_KITS = {
+    "Arsenal": {"home": 3, "away": 8, "gk": 20},
+    "Aston Villa": {"home": 7, "away": 9, "gk": 19},
+    "Bournemouth": {"home": 4, "away": 5, "gk": 20},
+    "Brentford": {"home": 94, "away": 95, "gk": 96},
+    "Brighton": {"home": 36, "away": 91, "gk": 92},
+    "Chelsea": {"home": 8, "away": 9, "gk": 19},
+    "Crystal Palace": {"home": 31, "away": 32, "gk": 33},
+    "Everton": {"home": 11, "away": 12, "gk": 13},
+    "Fulham": {"home": 54, "away": 55, "gk": 56},
+    "Ipswich Town": {"home": 40, "away": 41, "gk": 42},
+    "Leeds": {"home": 2, "away": 6, "gk": 4},
+    "Leicester City": {"home": 13, "away": 14, "gk": 15},
+    "Liverpool": {"home": 14, "away": 15, "gk": 16},
+    "Man City": {"home": 43, "away": 44, "gk": 45},
+    "Man Utd": {"home": 1, "away": 2, "gk": 3},
+    "Newcastle": {"home": 4, "away": 6, "gk": 5},
+    "Nott'm Forest": {"home": 17, "away": 18, "gk": 19},
+    "Southampton": {"home": 20, "away": 21, "gk": 22},
+    "Spurs": {"home": 6, "away": 8, "gk": 7},
+    "West Ham": {"home": 21, "away": 22, "gk": 23},
+}
+
 class Transfer(BaseModel):
     out_player: str
     in_player: str
@@ -51,7 +76,6 @@ def get_gws(events):
 
 def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
     teams_short = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
-    teams_code = {t["id"]: t["code"] for t in bootstrap["teams"]} # <--- ADDED
     completed_gws = sum(1 for e in bootstrap["events"] if e.get("finished"))
     
     fmap = {}
@@ -90,6 +114,8 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
 
         min_factor = (min(1.0, exp_mins / 80.0)) * avail
 
+        team_name = next((t["name"] for t in bootstrap["teams"] if t["id"] == p["team"]), "")
+        
         projections = {}
         fixtures_text = {}
         for gw in range(target_gw, target_gw + horizon):
@@ -105,12 +131,21 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
             labels = [("H " if fx["home"] else "A ") + teams_short.get(fx["opp"], str(fx["opp"])) for fx in fx_list]
             fixtures_text[str(gw)] = " / ".join(labels)
 
+        # Determine the correct kit ID based on Home/Away and Position
+        is_home = fixtures_text.get(str(target_gw), "H").startswith("H")
+        kit_dict = TEAM_KITS.get(team_name, {"home": 0, "away": 0, "gk": 0})
+        
+        if pos == "GK":
+            kit_id = kit_dict["gk"]
+        else:
+            kit_id = kit_dict["home"] if is_home else kit_dict["away"]
+
         rows.append({
             "id": int(p["id"]), 
             "code": int(p.get("code", 0)), 
-            "team_code": teams_code.get(p["team"], 0), # <--- ADDED
+            "kit_id": kit_id,
             "name": p["web_name"], 
-            "team": next((t["name"] for t in bootstrap["teams"] if t["id"] == p["team"]), ""),
+            "team": team_name,
             "team_id": int(p["team"]), "position": pos, "price": p["now_cost"] / 10.0,
             "points": int(p.get("total_points", 0)), "status": p.get("status", "a"),
             "owned": int(is_owned), "sell_price": owned.get(p["id"], {}).get("selling_price", p["now_cost"]) / 10.0,
