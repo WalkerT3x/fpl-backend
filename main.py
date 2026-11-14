@@ -273,7 +273,6 @@ def get_chips(req: OptimizeRequest):
         history = api_get(f"entry/{req.team_id}/history/")
         picks_gw, target_gw = get_gws(bootstrap["events"])
         
-        # EXTRACT USED CHIPS AND THEIR GAMEWEEKS
         used_chips_dict = {}
         if "chips" in history:
             for c in history["chips"]:
@@ -372,3 +371,25 @@ def get_players():
         return {"status": "success", "players": players}
     except Exception as e:
         return {"error": str(e)}
+
+@app.get("/api/transfers/{team_id}")
+def get_transfers(team_id: int):
+    try:
+        bootstrap = api_get("bootstrap-static/")
+        history = api_get(f"entry/{team_id}/transfers/")
+        
+        player_dict = {p["id"]: p["web_name"] for p in bootstrap["elements"]}
+        
+        transfers_list = []
+        for t in history:
+            transfers_list.append({
+                "gw": t["event"],
+                "out_name": player_dict.get(t["element_out"], "Unknown"),
+                "in_name": player_dict.get(t["element_in"], "Unknown"),
+                "out_cost": t["element_out_cost"] / 10.0,
+                "in_cost": t["element_in_cost"] / 10.0
+            })
+            
+        return {"status": "success", "transfers": transfers_list}
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
