@@ -133,11 +133,16 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
         else:
             shirt_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{team_code}-110.png"
 
+        first_name = p.get("first_name", "")
+        second_name = p.get("second_name", "")
+        full_name = f"{first_name} {second_name}".strip()
+
         rows.append({
             "id": int(p["id"]), 
             "code": int(p.get("code", 0)), 
             "shirt_url": shirt_url,
             "name": p["web_name"], 
+            "full_name": full_name,
             "team": team_name,
             "team_id": int(p["team"]), "position": pos, 
             "price10": int(p["now_cost"]),
@@ -228,7 +233,10 @@ def captain_choice(xi):
     return (c, v, pts)
 
 def apply_manual_transfers(df, owned, bank10, manual_transfers):
-    player_db = {normalize_name(p["name"]): p for _, p in df.iterrows()}
+    player_db = {}
+    for _, p in df.iterrows():
+        player_db[normalize_name(p["name"])] = p
+        player_db[normalize_name(p["full_name"])] = p
     
     for t in manual_transfers:
         out_p = player_db.get(normalize_name(t.out_player))
@@ -272,7 +280,6 @@ def optimize_team(req: OptimizeRequest):
         current_squad = df[df['id'].isin(current_ids)].copy()
         if len(current_squad) != 15: raise ValueError("Could not retrieve all 15 players.")
 
-        # --- FAST PATH (For page loads / refreshes) ---
         if not req.run_math:
             proposed_xi, proposed_bench, proposed_points = best_legal_xi(current_squad, target_gw)
             captain, vice, _ = captain_choice(proposed_xi)
@@ -289,7 +296,6 @@ def optimize_team(req: OptimizeRequest):
                 "transfer_advice": None
             }
 
-        # --- HEAVY MATH PATH (For "Run AI Transfer Math" button) ---
         dream_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=5, current_ids=current_ids, objective="horizon")
         
         dream_ids = set(dream_squad["id"].tolist())
@@ -346,7 +352,6 @@ def optimize_team(req: OptimizeRequest):
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
 
-# ... [CHIPS AND OTHER ENDPOINTS REMAIN UNCHANGED, SEE PREVIOUS FULL FILE] ...
 @app.post("/api/chips")
 def get_chips(req: OptimizeRequest):
     try:
@@ -470,7 +475,14 @@ def get_teams():
 def get_players():
     try:
         bootstrap = api_get("bootstrap-static/")
-        players = sorted(list(set([p["web_name"] for p in bootstrap["elements"]])))
+        players = []
+        for p in bootstrap["elements"]:
+            first = p.get("first_name", "")
+            second = p.get("second_name", "")
+            full_name = f"{first} {second}".strip()
+            players.append(full_name)
+            players.append(p["web_name"])
+        players = sorted(list(set(players)))
         return {"status": "success", "players": players}
     except Exception as e:
         return {"error": str(e)}
