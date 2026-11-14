@@ -134,8 +134,8 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     prob = pulp.LpProblem("FPL_Squad", pulp.LpMaximize)
     indices = list(df.index)
     
-    # FIXED PULP VARIABLE CREATION
-    x = pulp.LpVariable.dicts("pick", indices, cat=pulp.LpBinary)
+    # FIXED: Dictionary comprehension works on all PuLP versions
+    x = {i: pulp.LpVariable(f"pick_{i}", cat=pulp.LpBinary) for i in indices}
 
     if objective == "target":
         score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) for i in indices}
@@ -150,8 +150,6 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     for team_id in df["team_id"].unique():
         prob += pulp.lpSum(x[i] for i in indices if df.loc[i, "team_id"] == team_id) <= 3
 
-    # FIXED BUDGET CONSTRAINT
-    # Bank + Sum of (Sell Price of Sold Players) >= Sum of (Price of Bought Players)
     buy_costs = pulp.lpSum(int(df.loc[i, "price10"]) * x[i] for i in indices if int(df.loc[i, "id"]) not in current_ids)
     sell_gains = pulp.lpSum(int(df.loc[i, "sell_price10"]) * (1 - x[i]) for i in indices if int(df.loc[i, "id"]) in current_ids)
     prob += buy_costs <= int(bank10) + sell_gains
@@ -250,7 +248,6 @@ def optimize_team(req: OptimizeRequest):
         current_squad = df[df['id'].isin(current_ids)].copy()
         if len(current_squad) != 15: raise ValueError("Could not retrieve all 15 players.")
 
-        # 1. Calculate the 5-week Target (Dream Team)
         dream_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_ids=current_ids, objective="horizon")
         
         dream_ids = set(dream_squad["id"].tolist())
@@ -260,7 +257,6 @@ def optimize_team(req: OptimizeRequest):
         dream_out_list = dream_out[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records")
         dream_in_list = dream_in[["name", "team", "position", "price10"]].to_dict(orient="records")
 
-        # 2. Calculate the This Week Move (Restricted by FTs)
         if req.free_transfers > 0:
             this_week_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=req.free_transfers, current_ids=current_ids, objective="horizon")
             this_week_ids = set(this_week_squad["id"].tolist())
@@ -316,13 +312,11 @@ def get_chips(req: OptimizeRequest):
         history = api_get(f"entry/{req.team_id}/history/")
         picks_gw, target_gw = get_gws(bootstrap["events"])
         
-        # Determine Phase
         phase_end = 20 if target_gw <= 19 else 39
         phase_start = 1 if target_gw <= 19 else 20
         weeks = list(range(target_gw, phase_end))
         if not weeks: raise ValueError("Season is over.")
 
-        # Track used chips within this phase
         used_chips_dict = {}
         if "chips" in history:
             for c in history["chips"]:
@@ -358,7 +352,6 @@ def get_chips(req: OptimizeRequest):
         def best_week(values): 
             return max(values, key=values.get) if values else None
 
-        # 1. Bench Boost & Triple Captain (Skip math if used)
         if "BB" in used_chips_dict:
             best_bb_gw = used_chips_dict["BB"]
             bb_reason = "Already used in this phase."
@@ -373,7 +366,6 @@ def get_chips(req: OptimizeRequest):
             best_tc_gw = best_week({g: weekly[g]["tc"] for g in weeks})
             tc_reason = f"Highest projected captain points: {weekly[best_tc_gw]['captain']} ({weekly[best_tc_gw]['tc']:.1f} pts)."
 
-        # 2. Wildcard (Target the middle of the phase)
         if "WC" in used_chips_dict:
             best_wc_gw = used_chips_dict["WC"]
             wc_reason = "Already used in this phase."
@@ -384,7 +376,6 @@ def get_chips(req: OptimizeRequest):
                 best_wc_gw = min(weeks, key=lambda x: abs(x - (mid_week + 1)))
             wc_reason = "Logical mid-phase refresh to restructure your squad."
 
-        # 3. Free Hit (Skip heavy math if used, otherwise find best week)
         if "FH" in used_chips_dict:
             best_fh_gw = used_chips_dict["FH"]
             fh_reason = "Already used in this phase."
