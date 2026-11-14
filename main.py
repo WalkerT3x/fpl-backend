@@ -134,8 +134,10 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     prob = pulp.LpProblem("FPL_Squad", pulp.LpMaximize)
     indices = list(df.index)
     
-    # FIXED: Compatible with older PuLP versions (lowBound=0, upBound=1, cat=LpInteger)
-    x = {i: pulp.LpVariable(f"pick_{i}", 0, 1, pulp.LpInteger) for i in indices}
+    # UNIVERSAL FIX: Create normal variables with bounds 0-1, then force them to be Binary.
+    x = {i: pulp.LpVariable(f"pick_{i}", lowBound=0, upBound=1) for i in indices}
+    for i in indices:
+        x[i].cat = pulp.LpBinary
 
     if objective == "target":
         score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) for i in indices}
