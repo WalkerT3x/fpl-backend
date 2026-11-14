@@ -40,14 +40,14 @@ def api_get(path):
 def safe_float(val, default=0.0):
     try:
         return float(val) if val not in (None, "", "-", "null") else default
-    except:
+    except (ValueError, TypeError):
         return default
 
 def get_gws(events):
     current = next((e["id"] for e in events if e.get("is_current")), None)
     nxt = next((e["id"] for e in events if e.get("is_next")), None)
-    target = nxt or current
-    picks_gw = current if current else target
+    target = nxt or current or 1
+    picks_gw = current or target
     return picks_gw, target
 
 def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
@@ -129,11 +129,13 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
 
     return pd.DataFrame(rows)
 
-def solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_ids=None, objective="horizon", force_free_hit=False):
+def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_ids=None, objective="horizon", force_free_hit=False):
     current_ids = set(current_ids or [])
     prob = pulp.LpProblem("FPL_Squad", pulp.LpMaximize)
     indices = list(df.index)
-    x = prob.add_variable_dicts("pick", indices, cat=pulp.LpBinary)
+    
+    # FIXED PULP VARIABLE CREATION
+    x = pulp.LpVariable.dicts("pick", indices, cat=pulp.LpBinary)
 
     if objective == "target":
         score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) for i in indices}
@@ -148,12 +150,11 @@ def solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_
     for team_id in df["team_id"].unique():
         prob += pulp.lpSum(x[i] for i in indices if df.loc[i, "team_id"] == team_id) <= 3
 
-    costs = {}
-    for i in indices:
-        player_id = int(df.loc[i, "id"])
-        costs[i] = int(df.loc[i, "sell_price10"]) if player_id in current_ids else int(df.loc[i, "price10"])
-
-    prob += pulp.lpSum(x[i] * costs[i] for i in indices) <= int(budget10)
+    # FIXED BUDGET CONSTRAINT
+    # Bank + Sum of (Sell Price of Sold Players) >= Sum of (Price of Bought Players)
+    buy_costs = pulp.lpSum(int(df.loc[i, "price10"]) * x[i] for i in indices if int(df.loc[i, "id"]) not in current_ids)
+    sell_gains = pulp.lpSum(int(df.loc[i, "sell_price10"]) * (1 - x[i]) for i in indices if int(df.loc[i, "id"]) in current_ids)
+    prob += buy_costs <= int(bank10) + sell_gains
 
     if (max_transfers is not None and not force_free_hit):
         prob += pulp.lpSum(x[i] for i in indices if int(df.loc[i, "id"]) not in current_ids) <= int(max_transfers)
@@ -199,7 +200,10 @@ def best_legal_xi(squad, gw):
 
 def captain_choice(xi):
     ranked = xi.sort_values("GWProjection", ascending=False)
-    return (ranked.iloc[0]["name"], ranked.iloc[1]["name"], float(ranked.iloc[0]["GWProjection"]))
+    c = ranked.iloc[0]["name"] if len(ranked) > 0 else ""
+    v = ranked.iloc[1]["name"] if len(ranked) > 1 else ""
+    pts = float(ranked.iloc[0]["GWProjection"]) if len(ranked) > 0 else 0.0
+    return (c, v, pts)
 
 def apply_manual_transfers(df, owned, bank10, manual_transfers):
     player_db = {p["name"].lower(): p for _, p in df.iterrows()}
@@ -242,13 +246,12 @@ def optimize_team(req: OptimizeRequest):
         current_ids = list(owned.keys())
         
         selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
-        budget10 = selling_value10 + bank10
         
         current_squad = df[df['id'].isin(current_ids)].copy()
         if len(current_squad) != 15: raise ValueError("Could not retrieve all 15 players.")
 
         # 1. Calculate the 5-week Target (Dream Team)
-        dream_squad = solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_ids=current_ids, objective="horizon")
+        dream_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_ids=current_ids, objective="horizon")
         
         dream_ids = set(dream_squad["id"].tolist())
         dream_out = current_squad[~current_squad["id"].isin(dream_ids)].copy()
@@ -259,7 +262,7 @@ def optimize_team(req: OptimizeRequest):
 
         # 2. Calculate the This Week Move (Restricted by FTs)
         if req.free_transfers > 0:
-            this_week_squad = solve_squad(df, budget10, target_gw, horizon=5, max_transfers=req.free_transfers, current_ids=current_ids, objective="horizon")
+            this_week_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=req.free_transfers, current_ids=current_ids, objective="horizon")
             this_week_ids = set(this_week_squad["id"].tolist())
             
             out_players = current_squad[~current_squad["id"].isin(this_week_ids)].copy()
@@ -313,16 +316,23 @@ def get_chips(req: OptimizeRequest):
         history = api_get(f"entry/{req.team_id}/history/")
         picks_gw, target_gw = get_gws(bootstrap["events"])
         
+        # Determine Phase
+        phase_end = 20 if target_gw <= 19 else 39
+        phase_start = 1 if target_gw <= 19 else 20
+        weeks = list(range(target_gw, phase_end))
+        if not weeks: raise ValueError("Season is over.")
+
+        # Track used chips within this phase
         used_chips_dict = {}
         if "chips" in history:
             for c in history["chips"]:
-                name = c["name"].upper()
                 gw = c["event"]
-                abbr = "WC" if name == "WILDCARD" else "FH" if name == "FREEHIT" else "BB" if name == "BBOOST" else "TC" if name == "3XC" else name
-                used_chips_dict[abbr] = gw
+                if phase_start <= gw < phase_end:
+                    name = c["name"].upper()
+                    abbr = "WC" if name == "WILDCARD" else "FH" if name == "FREEHIT" else "BB" if name == "BBOOST" else "TC" if name == "3XC" else name
+                    used_chips_dict[abbr] = gw
 
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
-        
         player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
         owned = {}
         for p in picks["picks"]:
@@ -331,65 +341,81 @@ def get_chips(req: OptimizeRequest):
             if not sp: sp = player_costs.get(pid, 0)
             owned[pid] = {"selling_price": sp}
 
-        df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=9)
+        df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=10)
         bank10 = int(picks.get("entry_history", {}).get("bank", 0))
-        
         owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
         current_ids = list(owned.keys())
         
-        selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
-        budget10 = selling_value10 + bank10
-        
         current_squad = df[df['id'].isin(current_ids)].copy()
         
-        weeks = list(range(target_gw, 20))
-        if not weeks: raise ValueError("No remaining gameweeks.")
-
         weekly = {}
         for gw in weeks:
             xi, bench, xi_points = best_legal_xi(current_squad, gw)
             bench_points = float(bench["GWProjection"].sum())
             cap_name, vice_name, cap_points = captain_choice(xi)
-            weekly[gw] = {"xi": xi_points, "bb": bench_points, "tc": cap_points, "captain": cap_name, "bench": bench}
+            weekly[gw] = {"xi": xi_points, "bb": bench_points, "tc": cap_points, "captain": cap_name}
 
-        fh_values = {}
-        for gw in weeks:
-            try:
-                fh_squad = solve_squad(df, budget10=budget10, target_gw=gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
-                fh_xi, _, fh_points = best_legal_xi(fh_squad, gw)
-                fh_values[gw] = (fh_points - weekly[gw]["xi"])
-            except: fh_values[gw] = 0.0
+        def best_week(values): 
+            return max(values, key=values.get) if values else None
 
-        def best_week(values): return max(values, key=values.get) if values else None
+        # 1. Bench Boost & Triple Captain (Skip math if used)
+        if "BB" in used_chips_dict:
+            best_bb_gw = used_chips_dict["BB"]
+            bb_reason = "Already used in this phase."
+        else:
+            best_bb_gw = best_week({g: weekly[g]["bb"] for g in weeks})
+            bb_reason = f"Highest projected bench points ({weekly[best_bb_gw]['bb']:.1f} pts)."
 
-        best_bb_gw = best_week({g: weekly[g]["bb"] for g in weeks})
-        best_tc_gw = best_week({g: weekly[g]["tc"] for g in weeks})
-        best_fh_gw = best_week(fh_values)
-        
-        wc_values = {}
-        for gw in weeks:
-            if gw == best_fh_gw: continue 
-            try:
-                wc_squad = solve_squad(df, budget10=budget10, target_gw=gw, horizon=3, objective="horizon", current_ids=set(), force_free_hit=True)
-                wc_xi, _, wc_points = best_legal_xi(wc_squad, gw)
-                wc_values[gw] = (wc_points - weekly[gw]["xi"])
-            except: wc_values[gw] = 0.0
+        if "TC" in used_chips_dict:
+            best_tc_gw = used_chips_dict["TC"]
+            tc_reason = "Already used in this phase."
+        else:
+            best_tc_gw = best_week({g: weekly[g]["tc"] for g in weeks})
+            tc_reason = f"Highest projected captain points: {weekly[best_tc_gw]['captain']} ({weekly[best_tc_gw]['tc']:.1f} pts)."
+
+        # 2. Wildcard (Target the middle of the phase)
+        if "WC" in used_chips_dict:
+            best_wc_gw = used_chips_dict["WC"]
+            wc_reason = "Already used in this phase."
+        else:
+            mid_week = phase_start + (phase_end - phase_start) // 2
+            best_wc_gw = min(weeks, key=lambda x: abs(x - mid_week))
+            if best_wc_gw in (best_bb_gw, best_tc_gw):
+                best_wc_gw = min(weeks, key=lambda x: abs(x - (mid_week + 1)))
+            wc_reason = "Logical mid-phase refresh to restructure your squad."
+
+        # 3. Free Hit (Skip heavy math if used, otherwise find best week)
+        if "FH" in used_chips_dict:
+            best_fh_gw = used_chips_dict["FH"]
+            fh_reason = "Already used in this phase."
+            fh_xi, fh_bench = [], []
+        else:
+            fh_values = {}
+            for gw in weeks:
+                try:
+                    fh_squad = solve_squad(df, bank10=bank10, target_gw=gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
+                    fh_xi_temp, _, fh_points = best_legal_xi(fh_squad, gw)
+                    fh_values[gw] = (fh_points - weekly[gw]["xi"])
+                except: fh_values[gw] = 0.0
             
-        best_wc_gw = best_week(wc_values) if wc_values else best_fh_gw
-
-        fh_squad = solve_squad(df, budget10=budget10, target_gw=best_fh_gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
-        fh_xi, fh_bench, _ = best_legal_xi(fh_squad, best_fh_gw)
+            best_fh_gw = best_week(fh_values)
+            fh_reason = f"Biggest upgrade to your starting 11 (+{fh_values[best_fh_gw]:.1f} pts)."
+            fh_squad = solve_squad(df, bank10=bank10, target_gw=best_fh_gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
+            fh_xi, fh_bench, _ = best_legal_xi(fh_squad, best_fh_gw)
 
         return {
             "status": "success",
             "current_gw": target_gw,
             "chip_advice": {
-                "bench_boost": {"gw": best_bb_gw, "reason": f"Highest projected bench points ({weekly[best_bb_gw]['bb']:.1f} pts).", "used": "BB" in used_chips_dict, "used_gw": used_chips_dict.get("BB")},
-                "triple_captain": {"gw": best_tc_gw, "reason": f"Highest projected captain points: {weekly[best_tc_gw]['captain']} ({weekly[best_tc_gw]['tc']:.1f} pts).", "used": "TC" in used_chips_dict, "used_gw": used_chips_dict.get("TC")},
-                "free_hit": {"gw": best_fh_gw, "reason": f"Biggest upgrade to your starting 11 (+{fh_values[best_fh_gw]:.1f} pts).", "used": "FH" in used_chips_dict, "used_gw": used_chips_dict.get("FH")},
-                "wildcard": {"gw": best_wc_gw, "reason": "Major fixture swing to restructure.", "used": "WC" in used_chips_dict, "used_gw": used_chips_dict.get("WC")}
+                "bench_boost": {"gw": best_bb_gw, "reason": bb_reason, "used": "BB" in used_chips_dict},
+                "triple_captain": {"gw": best_tc_gw, "reason": tc_reason, "used": "TC" in used_chips_dict},
+                "free_hit": {"gw": best_fh_gw, "reason": fh_reason, "used": "FH" in used_chips_dict},
+                "wildcard": {"gw": best_wc_gw, "reason": wc_reason, "used": "WC" in used_chips_dict}
             },
-            "free_hit_team": {"starting_11": fh_xi.to_dict(orient="records"), "bench": fh_bench.to_dict(orient="records")}
+            "free_hit_team": {
+                "starting_11": fh_xi.to_dict(orient="records") if not isinstance(fh_xi, list) else [],
+                "bench": fh_bench.to_dict(orient="records") if not isinstance(fh_bench, list) else []
+            }
         }
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
