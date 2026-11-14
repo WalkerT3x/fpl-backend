@@ -45,7 +45,6 @@ def normalize_name(name):
     return unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('utf-8').lower()
 
 def clean_input_name(name_str):
-    # Removes the "(TEAM)" part if it exists
     if " (" in name_str:
         return name_str.split(" (")[0]
     return name_str
@@ -426,15 +425,20 @@ def get_chips(req: OptimizeRequest):
             best_tc_gw = best_week({g: weekly[g]["tc"] for g in weeks})
             tc_reason = f"Highest projected captain points: {weekly[best_tc_gw]['captain']} ({weekly[best_tc_gw]['tc']:.1f} pts)."
 
+        # FIXED: Calculate actual Wildcard Team
         if "WC" in used_chips_dict:
             best_wc_gw = used_chips_dict["WC"]
             wc_reason = "Already used in this phase."
+            wc_xi, wc_bench = [], []
         else:
             mid_week = phase_start + (phase_end - phase_start) // 2
             best_wc_gw = min(weeks, key=lambda x: abs(x - mid_week))
             if best_wc_gw in (best_bb_gw, best_tc_gw):
                 best_wc_gw = min(weeks, key=lambda x: abs(x - (mid_week + 1)))
             wc_reason = "Logical mid-phase refresh to restructure your squad."
+            
+            wc_squad = solve_squad(df, budget10=total_budget10, target_gw=best_wc_gw, horizon=5, objective="horizon", current_ids=set(), force_free_hit=True)
+            wc_xi, wc_bench, _ = best_legal_xi(wc_squad, best_wc_gw)
 
         if "FH" in used_chips_dict:
             best_fh_gw = used_chips_dict["FH"]
@@ -462,6 +466,10 @@ def get_chips(req: OptimizeRequest):
                 "triple_captain": {"gw": best_tc_gw, "reason": tc_reason, "used": "TC" in used_chips_dict, "used_gw": used_chips_dict.get("TC")},
                 "free_hit": {"gw": best_fh_gw, "reason": fh_reason, "used": "FH" in used_chips_dict, "used_gw": used_chips_dict.get("FH")},
                 "wildcard": {"gw": best_wc_gw, "reason": wc_reason, "used": "WC" in used_chips_dict, "used_gw": used_chips_dict.get("WC")}
+            },
+            "wildcard_team": {
+                "starting_11": wc_xi.to_dict(orient="records") if not isinstance(wc_xi, list) else [],
+                "bench": wc_bench.to_dict(orient="records") if not isinstance(wc_bench, list) else []
             },
             "free_hit_team": {
                 "starting_11": fh_xi.to_dict(orient="records") if not isinstance(fh_xi, list) else [],
@@ -493,10 +501,8 @@ def get_players():
             second = p.get("second_name", "")
             full_name = f"{first} {second}".strip()
 
-            # Add Web Name (e.g., "João Pedro (BHA)")
             players.add(f"{p['web_name']} ({team})")
 
-            # Add Full Name if different from Web Name (e.g., "João Pedro Junqueira de Jesus (BHA)")
             if full_name != p['web_name']:
                 players.add(f"{full_name} ({team})")
                 
