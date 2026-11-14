@@ -129,12 +129,11 @@ def calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=5):
 
     return pd.DataFrame(rows)
 
-def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_ids=None, objective="horizon", force_free_hit=False):
+def solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_ids=None, objective="horizon", force_free_hit=False):
     current_ids = set(current_ids or [])
     prob = pulp.LpProblem("FPL_Squad", pulp.LpMaximize)
     indices = list(df.index)
     
-    # PuLP 4.2.0 Syntax using prob.add_variable
     x = {}
     for i in indices:
         x[i] = prob.add_variable(f"pick_{i}", cat=pulp.LpBinary)
@@ -152,14 +151,14 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     for team_id in df["team_id"].unique():
         prob += pulp.lpSum(x[i] for i in indices if df.loc[i, "team_id"] == team_id) <= 3
 
+    # Budget constraint: New players cost <= Bank + Value of Sold Players
     buy_costs = pulp.lpSum(int(df.loc[i, "price10"]) * x[i] for i in indices if int(df.loc[i, "id"]) not in current_ids)
     sell_gains = pulp.lpSum(int(df.loc[i, "sell_price10"]) * (1 - x[i]) for i in indices if int(df.loc[i, "id"]) in current_ids)
-    prob += buy_costs <= int(bank10) + sell_gains
+    prob += buy_costs <= int(budget10) + sell_gains
 
     if (max_transfers is not None and not force_free_hit):
         prob += pulp.lpSum(x[i] for i in indices if int(df.loc[i, "id"]) not in current_ids) <= int(max_transfers)
 
-    # Use HiGHS since it is in your requirements.txt
     prob.solve(pulp.HiGHS(msg=False))
     
     chosen = [i for i in indices if pulp.value(x[i]) is not None and pulp.value(x[i]) > 0.5]
@@ -252,7 +251,7 @@ def optimize_team(req: OptimizeRequest):
         current_squad = df[df['id'].isin(current_ids)].copy()
         if len(current_squad) != 15: raise ValueError("Could not retrieve all 15 players.")
 
-        dream_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_ids=current_ids, objective="horizon")
+        dream_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=5, current_ids=current_ids, objective="horizon")
         
         dream_ids = set(dream_squad["id"].tolist())
         dream_out = current_squad[~current_squad["id"].isin(dream_ids)].copy()
@@ -344,6 +343,10 @@ def get_chips(req: OptimizeRequest):
         owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
         current_ids = list(owned.keys())
         
+        # FIXED: Calculate the full budget for Free Hit
+        selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
+        total_budget10 = bank10 + selling_value10
+        
         current_squad = df[df['id'].isin(current_ids)].copy()
         
         weekly = {}
@@ -388,14 +391,16 @@ def get_chips(req: OptimizeRequest):
             fh_values = {}
             for gw in weeks:
                 try:
-                    fh_squad = solve_squad(df, bank10=bank10, target_gw=gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
+                    # FIXED: Use total_budget10 for Free Hit
+                    fh_squad = solve_squad(df, budget10=total_budget10, target_gw=gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
                     fh_xi_temp, _, fh_points = best_legal_xi(fh_squad, gw)
                     fh_values[gw] = (fh_points - weekly[gw]["xi"])
                 except: fh_values[gw] = 0.0
             
             best_fh_gw = best_week(fh_values)
             fh_reason = f"Biggest upgrade to your starting 11 (+{fh_values[best_fh_gw]:.1f} pts)."
-            fh_squad = solve_squad(df, bank10=bank10, target_gw=best_fh_gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
+            # FIXED: Use total_budget10 for Free Hit
+            fh_squad = solve_squad(df, budget10=total_budget10, target_gw=best_fh_gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
             fh_xi, fh_bench, _ = best_legal_xi(fh_squad, best_fh_gw)
 
         return {
