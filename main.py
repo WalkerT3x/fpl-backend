@@ -227,9 +227,29 @@ def optimize_team(req: OptimizeRequest):
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
         player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
         owned = {p["element"]: {"selling_price": p.get("selling_price") or player_costs.get(p["element"], 0)} for p in picks["picks"]}
+        
+        # --- SELF-CLEANING MANUAL TRANSFERS LOGIC ---
+        real_squad_ids = {p["element"] for p in picks["picks"]}
+        name_to_id = {normalize_name(p["web_name"]): p["id"] for p in bootstrap["elements"]}
+        name_to_id.update({normalize_name(p["full_name"]): p["id"] for p in bootstrap["elements"]})
+        
+        active_manual_transfers = []
+        for t in req.manual_transfers:
+            out_id = name_to_id.get(normalize_name(clean_input_name(t.out_player)))
+            in_id = name_to_id.get(normalize_name(clean_input_name(t.in_player)))
+            
+            # If the IN player is already in the squad, and the OUT player is gone, the API has processed it
+            if out_id and in_id and (in_id in real_squad_ids) and (out_id not in real_squad_ids):
+                continue # Skip it, it's complete!
+                
+            active_manual_transfers.append(t)
+        # --------------------------------------------
+
         df = calculate_projections(bootstrap, fixtures, owned, target_gw)
         bank10 = int(picks.get("entry_history", {}).get("bank", 0))
-        owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
+        
+        # Apply only the active manual transfers
+        owned, bank10 = apply_manual_transfers(df, owned, bank10, active_manual_transfers)
         current_ids = list(owned.keys())
         selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
         current_squad = df[df['id'].isin(current_ids)].copy()
@@ -238,7 +258,7 @@ def optimize_team(req: OptimizeRequest):
         if not req.run_math:
             proposed_xi, proposed_bench, _ = best_legal_xi(current_squad, target_gw)
             captain, vice, _ = captain_choice(proposed_xi)
-            return {"status": "success", "current_gw": target_gw, "gw_name": gw_name, "deadline": deadline, "starting_11": proposed_xi.to_dict(orient="records"), "bench": proposed_bench.to_dict(orient="records"), "captain": captain, "vice": vice, "bank": bank10 / 10.0, "team_value": selling_value10 / 10.0, "bank_after": bank10 / 10.0, "transfer_advice": None, "chip_status": chip_status}
+            return {"status": "success", "current_gw": target_gw, "gw_name": gw_name, "deadline": deadline, "starting_11": proposed_xi.to_dict(orient="records"), "bench": proposed_bench.to_dict(orient="records"), "captain": captain, "vice": vice, "bank": bank10 / 10.0, "team_value": selling_value10 / 10.0, "bank_after": bank10 / 10.0, "transfer_advice": None, "chip_status": chip_status, "active_manual_transfers": [t.dict() for t in active_manual_transfers]}
 
         dream_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=5, current_ids=current_ids, objective="horizon")
         dream_ids = set(dream_squad["id"].tolist())
@@ -265,12 +285,12 @@ def optimize_team(req: OptimizeRequest):
             current_points = proposed_points
             captain, vice, _ = captain_choice(proposed_xi)
 
-        return {"status": "success", "current_gw": target_gw, "gw_name": gw_name, "deadline": deadline, "starting_11": proposed_xi.to_dict(orient="records"), "bench": proposed_bench.to_dict(orient="records"), "captain": captain, "vice": vice, "bank": bank10 / 10.0, "team_value": selling_value10 / 10.0, "bank_after": bank_after / 10.0, "transfer_advice": {"gain": proposed_points - current_points, "this_week_out": out_players[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records") if not out_players.empty else [], "this_week_in": in_players[["name", "team", "position", "price10"]].to_dict(orient="records") if not in_players.empty else [], "dream_out": dream_out[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records"), "dream_in": dream_in[["name", "team", "position", "price10"]].to_dict(orient="records")}, "chip_status": chip_status}
+        return {"status": "success", "current_gw": target_gw, "gw_name": gw_name, "deadline": deadline, "starting_11": proposed_xi.to_dict(orient="records"), "bench": proposed_bench.to_dict(orient="records"), "captain": captain, "vice": vice, "bank": bank10 / 10.0, "team_value": selling_value10 / 10.0, "bank_after": bank_after / 10.0, "transfer_advice": {"gain": proposed_points - current_points, "this_week_out": out_players[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records") if not out_players.empty else [], "this_week_in": in_players[["name", "team", "position", "price10"]].to_dict(orient="records") if not in_players.empty else [], "dream_out": dream_out[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records"), "dream_in": dream_in[["name", "team", "position", "price10"]].to_dict(orient="records")}, "chip_status": chip_status, "active_manual_transfers": [t.dict() for t in active_manual_transfers]}
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
 
 # ... (Keep the rest of the endpoints exactly the same: /api/chips, /api/teams, /api/players, /api/transfers) ...
-# For brevity, I'm assuming you keep the existing get_chips, get_teams, get_players, get_transfers functions from the previous file.
+# For brevity, I'll assume you keep the existing get_chips, get_teams, get_players, get_transfers functions from the previous file.
 
 @app.post("/api/chips")
 def get_chips(req: OptimizeRequest):
@@ -300,9 +320,21 @@ def get_chips(req: OptimizeRequest):
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
         player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
         owned = {p["element"]: {"selling_price": p.get("selling_price") or player_costs.get(p["element"], 0)} for p in picks["picks"]}
+        
+        # Apply Self-Cleaning logic here too
+        real_squad_ids = {p["element"] for p in picks["picks"]}
+        name_to_id = {normalize_name(p["web_name"]): p["id"] for p in bootstrap["elements"]}
+        name_to_id.update({normalize_name(p["full_name"]): p["id"] for p in bootstrap["elements"]})
+        active_manual_transfers = []
+        for t in req.manual_transfers:
+            out_id = name_to_id.get(normalize_name(clean_input_name(t.out_player)))
+            in_id = name_to_id.get(normalize_name(clean_input_name(t.in_player)))
+            if out_id and in_id and (in_id in real_squad_ids) and (out_id not in real_squad_ids): continue
+            active_manual_transfers.append(t)
+
         df = calculate_projections(bootstrap, fixtures, owned, target_gw, horizon=10)
         bank10 = int(picks.get("entry_history", {}).get("bank", 0))
-        owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
+        owned, bank10 = apply_manual_transfers(df, owned, bank10, active_manual_transfers)
         current_ids = list(owned.keys())
         selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
         total_budget10 = bank10 + selling_value10
