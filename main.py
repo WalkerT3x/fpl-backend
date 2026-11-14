@@ -134,8 +134,10 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     prob = pulp.LpProblem("FPL_Squad", pulp.LpMaximize)
     indices = list(df.index)
     
-    # PuLP 4.x syntax: variables are created by the problem itself
-    x = {i: prob.add_variable(f"pick_{i}", cat=pulp.LpBinary) for i in indices}
+    # PuLP 4.2.0 Syntax using prob.add_variable
+    x = {}
+    for i in indices:
+        x[i] = prob.add_variable(f"pick_{i}", cat=pulp.LpBinary)
 
     if objective == "target":
         score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) for i in indices}
@@ -157,8 +159,8 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     if (max_transfers is not None and not force_free_hit):
         prob += pulp.lpSum(x[i] for i in indices if int(df.loc[i, "id"]) not in current_ids) <= int(max_transfers)
 
-    # PuLP 4.x: CBC is no longer bundled; use COIN_CMD
-    prob.solve(pulp.COIN_CMD(msg=False))
+    # Use HiGHS since it is in your requirements.txt
+    prob.solve(pulp.HiGHS(msg=False))
     
     chosen = [i for i in indices if pulp.value(x[i]) is not None and pulp.value(x[i]) > 0.5]
 
