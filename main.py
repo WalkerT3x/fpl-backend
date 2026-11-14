@@ -134,8 +134,8 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     prob = pulp.LpProblem("FPL_Squad", pulp.LpMaximize)
     indices = list(df.index)
     
-    # FIXED: Dictionary comprehension works on all PuLP versions
-    x = {i: pulp.LpVariable(f"pick_{i}", cat=pulp.LpBinary) for i in indices}
+    # FIXED: Compatible with older PuLP versions (lowBound=0, upBound=1, cat=LpInteger)
+    x = {i: pulp.LpVariable(f"pick_{i}", 0, 1, pulp.LpInteger) for i in indices}
 
     if objective == "target":
         score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) for i in indices}
