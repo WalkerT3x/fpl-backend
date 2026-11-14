@@ -140,8 +140,6 @@ def solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_
 
     if objective == "target":
         if force_free_hit:
-            # FREE HIT PENALTY: Subtract a penalty for price. This forces the solver 
-            # to buy the cheapest possible bench, saving money for the starting 11.
             score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) - (int(df.loc[i, "price10"]) * 0.05) for i in indices}
         else:
             score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) for i in indices}
@@ -408,10 +406,10 @@ def get_chips(req: OptimizeRequest):
             "status": "success",
             "current_gw": target_gw,
             "chip_advice": {
-                "bench_boost": {"gw": best_bb_gw, "reason": bb_reason, "used": "BB" in used_chips_dict},
-                "triple_captain": {"gw": best_tc_gw, "reason": tc_reason, "used": "TC" in used_chips_dict},
-                "free_hit": {"gw": best_fh_gw, "reason": fh_reason, "used": "FH" in used_chips_dict},
-                "wildcard": {"gw": best_wc_gw, "reason": wc_reason, "used": "WC" in used_chips_dict}
+                "bench_boost": {"gw": best_bb_gw, "reason": bb_reason, "used": "BB" in used_chips_dict, "used_gw": used_chips_dict.get("BB")},
+                "triple_captain": {"gw": best_tc_gw, "reason": tc_reason, "used": "TC" in used_chips_dict, "used_gw": used_chips_dict.get("TC")},
+                "free_hit": {"gw": best_fh_gw, "reason": fh_reason, "used": "FH" in used_chips_dict, "used_gw": used_chips_dict.get("FH")},
+                "wildcard": {"gw": best_wc_gw, "reason": wc_reason, "used": "WC" in used_chips_dict, "used_gw": used_chips_dict.get("WC")}
             },
             "free_hit_team": {
                 "starting_11": fh_xi.to_dict(orient="records") if not isinstance(fh_xi, list) else [],
