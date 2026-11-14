@@ -34,7 +34,10 @@ class OptimizeRequest(BaseModel):
     manual_transfers: list[Transfer] = []
 
 def normalize_name(name):
-    # Converts "Ødegaard" to "odegaard"
+    # FIXED: Handle special characters that NFKD doesn't catch natively
+    name = name.replace('Ø', 'O').replace('ø', 'o')
+    name = name.replace('Æ', 'AE').replace('æ', 'ae')
+    name = name.replace('Å', 'A').replace('å', 'a')
     return unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('utf-8').lower()
 
 def api_get(path):
@@ -214,7 +217,6 @@ def captain_choice(xi):
     return (c, v, pts)
 
 def apply_manual_transfers(df, owned, bank10, manual_transfers):
-    # Normalize names when creating the database
     player_db = {normalize_name(p["name"]): p for _, p in df.iterrows()}
     
     for t in manual_transfers:
