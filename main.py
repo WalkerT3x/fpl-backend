@@ -134,12 +134,10 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     prob = pulp.LpProblem("FPL_Squad", pulp.LpMaximize)
     indices = list(df.index)
     
-    # ABSOLUTE SAFEST VARIABLE CREATION (No kwargs in init)
+    # THE BULLETPROOF FIX for PuLP 4.2.0+
     x = {}
     for i in indices:
         x[i] = pulp.LpVariable(f"pick_{i}")
-        x[i].lowBound = 0
-        x[i].upBound = 1
         x[i].cat = pulp.LpBinary
 
     if objective == "target":
@@ -162,7 +160,6 @@ def solve_squad(df, bank10, target_gw, horizon=5, max_transfers=None, current_id
     if (max_transfers is not None and not force_free_hit):
         prob += pulp.lpSum(x[i] for i in indices if int(df.loc[i, "id"]) not in current_ids) <= int(max_transfers)
 
-    # Use PULP_CBC_CMD (The standard solver installed on all versions)
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     
     chosen = [i for i in indices if pulp.value(x[i]) is not None and pulp.value(x[i]) > 0.5]
