@@ -267,6 +267,10 @@ def optimize_team(req: OptimizeRequest):
         fixtures = api_get("fixtures/")
         picks_gw, target_gw = get_gws(bootstrap["events"])
         
+        # Get deadline for the target GW
+        target_event = next((e for e in bootstrap["events"] if e["id"] == target_gw), None)
+        deadline = target_event.get("deadline_time") if target_event else ""
+
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
         
         player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
@@ -294,6 +298,7 @@ def optimize_team(req: OptimizeRequest):
             return {
                 "status": "success", 
                 "current_gw": target_gw, 
+                "deadline": deadline,
                 "starting_11": proposed_xi.to_dict(orient="records"), 
                 "bench": proposed_bench.to_dict(orient="records"),
                 "captain": captain,
@@ -342,6 +347,7 @@ def optimize_team(req: OptimizeRequest):
         return {
             "status": "success", 
             "current_gw": target_gw, 
+            "deadline": deadline,
             "starting_11": proposed_xi.to_dict(orient="records"), 
             "bench": proposed_bench.to_dict(orient="records"),
             "captain": captain,
@@ -411,7 +417,6 @@ def get_chips(req: OptimizeRequest):
         def best_week(values): 
             return max(values, key=values.get) if values else None
 
-        # 1. BB & TC
         if "BB" in used_chips_dict:
             best_bb_gw = used_chips_dict["BB"]
             bb_reason = "Already used in this phase."
@@ -426,35 +431,30 @@ def get_chips(req: OptimizeRequest):
             best_tc_gw = best_week({g: weekly[g]["tc"] for g in weeks})
             tc_reason = f"Highest projected captain points: {weekly[best_tc_gw]['captain']} ({weekly[best_tc_gw]['tc']:.1f} pts)."
 
-        # 2. WILDCARD (Mid-phase, strictly avoiding BB & TC)
         if "WC" in used_chips_dict:
             best_wc_gw = used_chips_dict["WC"]
             wc_reason = "Already used in this phase."
             wc_xi, wc_bench = [], []
         else:
-            # Filter out the weeks already taken by BB and TC
             available_wc_weeks = [w for w in weeks if w not in (best_bb_gw, best_tc_gw)]
             if not available_wc_weeks:
-                available_wc_weeks = weeks # Fallback just in case
+                available_wc_weeks = weeks 
             
             mid_week = phase_start + (phase_end - phase_start) // 2
-            # Pick the closest available week to the middle of the phase
             best_wc_gw = min(available_wc_weeks, key=lambda x: abs(x - mid_week))
             wc_reason = "Logical mid-phase refresh to restructure your squad."
             
             wc_squad = solve_squad(df, budget10=total_budget10, target_gw=best_wc_gw, horizon=5, objective="horizon", current_ids=set(), force_free_hit=True)
             wc_xi, wc_bench, _ = best_legal_xi(wc_squad, best_wc_gw)
 
-        # 3. FREE HIT (Best remaining week, strictly avoiding BB, TC & WC)
         if "FH" in used_chips_dict:
             best_fh_gw = used_chips_dict["FH"]
             fh_reason = "Already used in this phase."
             fh_xi, fh_bench = [], []
         else:
-            # Filter out weeks taken by BB, TC, and WC
             available_fh_weeks = [w for w in weeks if w not in (best_bb_gw, best_tc_gw, best_wc_gw)]
             if not available_fh_weeks:
-                available_fh_weeks = weeks # Fallback
+                available_fh_weeks = weeks
 
             fh_values = {}
             for gw in available_fh_weeks:
