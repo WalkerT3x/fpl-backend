@@ -316,6 +316,7 @@ def get_chips(req: OptimizeRequest):
             best_fh_gw = used_chips_dict["FH"]; fh_reason = "Already used."
             fh_xi, fh_bench, fh_cap, fh_vice = [], [], "", ""
         else:
+            # Reverted back to all weeks for perfect accuracy
             available_fh_weeks = [w for w in weeks if w not in (best_bb_gw, best_tc_gw, best_wc_gw)] or weeks
             fh_values = {}
             for gw in available_fh_weeks:
