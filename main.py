@@ -183,7 +183,6 @@ def captain_choice(xi):
     return (c, v, pts)
 
 def apply_manual_transfers(df, owned, bank10, manual_transfers):
-    # SAFE UPDATE: Check if 'full_name' column exists before using it
     player_db = {normalize_name(p["name"]): p for _, p in df.iterrows()}
     if "full_name" in df.columns:
         player_db.update({normalize_name(p["full_name"]): p for _, p in df.iterrows() if p["full_name"]})
@@ -395,3 +394,8 @@ def get_transfers(team_id: int):
         transfers_list = [{"gw": t["event"], "out_name": player_dict.get(t["element_out"], "Unknown"), "in_name": player_dict.get(t["element_in"], "Unknown"), "out_cost": t["element_out_cost"] / 10.0, "in_cost": t["element_in_cost"] / 10.0} for t in history]
         return {"status": "success", "transfers": transfers_list}
     except Exception as e: return {"error": str(e)}
+
+# --- NEW HEALTH ENDPOINT FOR UPTIMEROBOT ---
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health_check():
+    return {"status": "ok"}
