@@ -6,6 +6,7 @@ import pandas as pd
 import pulp
 import uvicorn
 import traceback
+import unicodedata
 
 app = FastAPI(title="FPL Genius API")
 
@@ -31,6 +32,10 @@ class OptimizeRequest(BaseModel):
     team_id: int
     free_transfers: int
     manual_transfers: list[Transfer] = []
+
+def normalize_name(name):
+    # Converts "Ødegaard" to "odegaard"
+    return unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('utf-8').lower()
 
 def api_get(path):
     res = HTTP.get(BASE + path)
@@ -209,11 +214,12 @@ def captain_choice(xi):
     return (c, v, pts)
 
 def apply_manual_transfers(df, owned, bank10, manual_transfers):
-    player_db = {p["name"].lower(): p for _, p in df.iterrows()}
+    # Normalize names when creating the database
+    player_db = {normalize_name(p["name"]): p for _, p in df.iterrows()}
     
     for t in manual_transfers:
-        out_p = player_db.get(t.out_player.lower())
-        in_p = player_db.get(t.in_player.lower())
+        out_p = player_db.get(normalize_name(t.out_player))
+        in_p = player_db.get(normalize_name(t.in_player))
         
         if out_p is not None and in_p is not None and out_p["id"] in owned:
             out_id, in_id = out_p["id"], in_p["id"]
