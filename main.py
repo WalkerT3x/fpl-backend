@@ -44,6 +44,12 @@ def normalize_name(name):
     name = name.replace('Å', 'A').replace('å', 'a')
     return unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('utf-8').lower()
 
+def clean_input_name(name_str):
+    # Removes the "(TEAM)" part if it exists
+    if " (" in name_str:
+        return name_str.split(" (")[0]
+    return name_str
+
 def api_get(path):
     if path in CACHE:
         if time.time() - CACHE[path]['time'] < CACHE_DURATION:
@@ -239,8 +245,11 @@ def apply_manual_transfers(df, owned, bank10, manual_transfers):
         player_db[normalize_name(p["full_name"])] = p
     
     for t in manual_transfers:
-        out_p = player_db.get(normalize_name(t.out_player))
-        in_p = player_db.get(normalize_name(t.in_player))
+        out_clean = clean_input_name(t.out_player)
+        in_clean = clean_input_name(t.in_player)
+        
+        out_p = player_db.get(normalize_name(out_clean))
+        in_p = player_db.get(normalize_name(in_clean))
         
         if out_p is not None and in_p is not None and out_p["id"] in owned:
             out_id, in_id = out_p["id"], in_p["id"]
@@ -475,15 +484,23 @@ def get_teams():
 def get_players():
     try:
         bootstrap = api_get("bootstrap-static/")
-        players = []
+        teams = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
+        players = set()
+        
         for p in bootstrap["elements"]:
+            team = teams.get(p["team"], "")
             first = p.get("first_name", "")
             second = p.get("second_name", "")
             full_name = f"{first} {second}".strip()
-            players.append(full_name)
-            players.append(p["web_name"])
-        players = sorted(list(set(players)))
-        return {"status": "success", "players": players}
+
+            # Add Web Name (e.g., "João Pedro (BHA)")
+            players.add(f"{p['web_name']} ({team})")
+
+            # Add Full Name if different from Web Name (e.g., "João Pedro Junqueira de Jesus (BHA)")
+            if full_name != p['web_name']:
+                players.add(f"{full_name} ({team})")
+                
+        return {"status": "success", "players": sorted(list(players))}
     except Exception as e:
         return {"error": str(e)}
 
