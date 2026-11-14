@@ -139,7 +139,12 @@ def solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_
         x[i] = prob.add_variable(f"pick_{i}", cat=pulp.LpBinary)
 
     if objective == "target":
-        score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) for i in indices}
+        if force_free_hit:
+            # FREE HIT PENALTY: Subtract a penalty for price. This forces the solver 
+            # to buy the cheapest possible bench, saving money for the starting 11.
+            score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) - (int(df.loc[i, "price10"]) * 0.05) for i in indices}
+        else:
+            score = {i: float(df.loc[i, "proj"].get(str(target_gw), 0)) for i in indices}
     else:
         score = {i: sum(float(df.loc[i, "proj"].get(str(gw), 0)) for gw in range(target_gw, min(39, target_gw + horizon))) for i in indices}
 
@@ -151,7 +156,6 @@ def solve_squad(df, budget10, target_gw, horizon=5, max_transfers=None, current_
     for team_id in df["team_id"].unique():
         prob += pulp.lpSum(x[i] for i in indices if df.loc[i, "team_id"] == team_id) <= 3
 
-    # Budget constraint: New players cost <= Bank + Value of Sold Players
     buy_costs = pulp.lpSum(int(df.loc[i, "price10"]) * x[i] for i in indices if int(df.loc[i, "id"]) not in current_ids)
     sell_gains = pulp.lpSum(int(df.loc[i, "sell_price10"]) * (1 - x[i]) for i in indices if int(df.loc[i, "id"]) in current_ids)
     prob += buy_costs <= int(budget10) + sell_gains
@@ -343,7 +347,6 @@ def get_chips(req: OptimizeRequest):
         owned, bank10 = apply_manual_transfers(df, owned, bank10, req.manual_transfers)
         current_ids = list(owned.keys())
         
-        # FIXED: Calculate the full budget for Free Hit
         selling_value10 = sum(owned[player_id]["selling_price"] for player_id in current_ids)
         total_budget10 = bank10 + selling_value10
         
@@ -391,7 +394,6 @@ def get_chips(req: OptimizeRequest):
             fh_values = {}
             for gw in weeks:
                 try:
-                    # FIXED: Use total_budget10 for Free Hit
                     fh_squad = solve_squad(df, budget10=total_budget10, target_gw=gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
                     fh_xi_temp, _, fh_points = best_legal_xi(fh_squad, gw)
                     fh_values[gw] = (fh_points - weekly[gw]["xi"])
@@ -399,7 +401,6 @@ def get_chips(req: OptimizeRequest):
             
             best_fh_gw = best_week(fh_values)
             fh_reason = f"Biggest upgrade to your starting 11 (+{fh_values[best_fh_gw]:.1f} pts)."
-            # FIXED: Use total_budget10 for Free Hit
             fh_squad = solve_squad(df, budget10=total_budget10, target_gw=best_fh_gw, horizon=1, objective="target", current_ids=set(), force_free_hit=True)
             fh_xi, fh_bench, _ = best_legal_xi(fh_squad, best_fh_gw)
 
