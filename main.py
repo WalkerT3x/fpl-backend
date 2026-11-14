@@ -208,6 +208,15 @@ def optimize_team(req: OptimizeRequest):
         deadline = next_event.get("deadline_time") if next_event else None
         gw_name = next_event.get("name") if next_event else f"Gameweek {target_gw}"
 
+        # INSTANT CHIP STATUS FETCH
+        history = api_get(f"entry/{req.team_id}/history/")
+        used_chips = {"BB": False, "TC": False, "WC": False, "FH": False}
+        if "chips" in history:
+            for c in history["chips"]:
+                name = c["name"].upper()
+                abbr = "WC" if name == "WILDCARD" else "FH" if name == "FREEHIT" else "BB" if name == "BBOOST" else "TC" if name == "3XC" else name
+                if abbr in used_chips: used_chips[abbr] = True
+
         picks = api_get(f"entry/{req.team_id}/event/{picks_gw}/picks/")
         player_costs = {p["id"]: p["now_cost"] for p in bootstrap["elements"]}
         owned = {p["element"]: {"selling_price": p.get("selling_price") or player_costs.get(p["element"], 0)} for p in picks["picks"]}
@@ -222,7 +231,7 @@ def optimize_team(req: OptimizeRequest):
         if not req.run_math:
             proposed_xi, proposed_bench, _ = best_legal_xi(current_squad, target_gw)
             captain, vice, _ = captain_choice(proposed_xi)
-            return {"status": "success", "current_gw": target_gw, "gw_name": gw_name, "deadline": deadline, "starting_11": proposed_xi.to_dict(orient="records"), "bench": proposed_bench.to_dict(orient="records"), "captain": captain, "vice": vice, "bank": bank10 / 10.0, "team_value": selling_value10 / 10.0, "bank_after": bank10 / 10.0, "transfer_advice": None}
+            return {"status": "success", "current_gw": target_gw, "gw_name": gw_name, "deadline": deadline, "starting_11": proposed_xi.to_dict(orient="records"), "bench": proposed_bench.to_dict(orient="records"), "captain": captain, "vice": vice, "bank": bank10 / 10.0, "team_value": selling_value10 / 10.0, "bank_after": bank10 / 10.0, "transfer_advice": None, "chip_status": used_chips}
 
         dream_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=5, current_ids=current_ids, objective="horizon")
         dream_ids = set(dream_squad["id"].tolist())
@@ -249,7 +258,7 @@ def optimize_team(req: OptimizeRequest):
             current_points = proposed_points
             captain, vice, _ = captain_choice(proposed_xi)
 
-        return {"status": "success", "current_gw": target_gw, "gw_name": gw_name, "deadline": deadline, "starting_11": proposed_xi.to_dict(orient="records"), "bench": proposed_bench.to_dict(orient="records"), "captain": captain, "vice": vice, "bank": bank10 / 10.0, "team_value": selling_value10 / 10.0, "bank_after": bank_after / 10.0, "transfer_advice": {"gain": proposed_points - current_points, "this_week_out": out_players[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records") if not out_players.empty else [], "this_week_in": in_players[["name", "team", "position", "price10"]].to_dict(orient="records") if not in_players.empty else [], "dream_out": dream_out[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records"), "dream_in": dream_in[["name", "team", "position", "price10"]].to_dict(orient="records")}}
+        return {"status": "success", "current_gw": target_gw, "gw_name": gw_name, "deadline": deadline, "starting_11": proposed_xi.to_dict(orient="records"), "bench": proposed_bench.to_dict(orient="records"), "captain": captain, "vice": vice, "bank": bank10 / 10.0, "team_value": selling_value10 / 10.0, "bank_after": bank_after / 10.0, "transfer_advice": {"gain": proposed_points - current_points, "this_week_out": out_players[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records") if not out_players.empty else [], "this_week_in": in_players[["name", "team", "position", "price10"]].to_dict(orient="records") if not in_players.empty else [], "dream_out": dream_out[["name", "team", "position", "price10", "sell_price10"]].to_dict(orient="records"), "dream_in": dream_in[["name", "team", "position", "price10"]].to_dict(orient="records")}, "chip_status": used_chips}
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
 
@@ -316,8 +325,9 @@ def get_chips(req: OptimizeRequest):
             best_fh_gw = used_chips_dict["FH"]; fh_reason = "Already used."
             fh_xi, fh_bench, fh_cap, fh_vice = [], [], "", ""
         else:
-            # Reverted back to all weeks for perfect accuracy
             available_fh_weeks = [w for w in weeks if w not in (best_bb_gw, best_tc_gw, best_wc_gw)] or weeks
+            available_fh_weeks = available_fh_weeks[:4] 
+            
             fh_values = {}
             for gw in available_fh_weeks:
                 try:
