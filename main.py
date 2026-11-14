@@ -7,6 +7,7 @@ import pulp
 import uvicorn
 import traceback
 import unicodedata
+import time
 
 app = FastAPI(title="FPL Genius API")
 
@@ -24,6 +25,9 @@ GOAL_POINTS = {"GK": 6, "DEF": 6, "MID": 5, "FWD": 4}
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "FPL-Genius-API/1.0"})
 
+CACHE = {}
+CACHE_DURATION = 300 # 5 minutes
+
 class Transfer(BaseModel):
     out_player: str
     in_player: str
@@ -32,18 +36,25 @@ class OptimizeRequest(BaseModel):
     team_id: int
     free_transfers: int
     manual_transfers: list[Transfer] = []
+    run_math: bool = False
 
 def normalize_name(name):
-    # FIXED: Handle special characters that NFKD doesn't catch natively
     name = name.replace('Ø', 'O').replace('ø', 'o')
     name = name.replace('Æ', 'AE').replace('æ', 'ae')
     name = name.replace('Å', 'A').replace('å', 'a')
     return unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('utf-8').lower()
 
 def api_get(path):
+    if path in CACHE:
+        if time.time() - CACHE[path]['time'] < CACHE_DURATION:
+            return CACHE[path]['data']
+    
     res = HTTP.get(BASE + path)
     res.raise_for_status()
-    return res.json()
+    data = res.json()
+    
+    CACHE[path] = {'data': data, 'time': time.time()}
+    return data
 
 def safe_float(val, default=0.0):
     try:
@@ -261,6 +272,24 @@ def optimize_team(req: OptimizeRequest):
         current_squad = df[df['id'].isin(current_ids)].copy()
         if len(current_squad) != 15: raise ValueError("Could not retrieve all 15 players.")
 
+        # --- FAST PATH (For page loads / refreshes) ---
+        if not req.run_math:
+            proposed_xi, proposed_bench, proposed_points = best_legal_xi(current_squad, target_gw)
+            captain, vice, _ = captain_choice(proposed_xi)
+            return {
+                "status": "success", 
+                "current_gw": target_gw, 
+                "starting_11": proposed_xi.to_dict(orient="records"), 
+                "bench": proposed_bench.to_dict(orient="records"),
+                "captain": captain,
+                "vice": vice,
+                "bank": bank10 / 10.0,
+                "team_value": selling_value10 / 10.0,
+                "bank_after": bank10 / 10.0,
+                "transfer_advice": None
+            }
+
+        # --- HEAVY MATH PATH (For "Run AI Transfer Math" button) ---
         dream_squad = solve_squad(df, bank10, target_gw, horizon=5, max_transfers=5, current_ids=current_ids, objective="horizon")
         
         dream_ids = set(dream_squad["id"].tolist())
@@ -317,6 +346,7 @@ def optimize_team(req: OptimizeRequest):
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
 
+# ... [CHIPS AND OTHER ENDPOINTS REMAIN UNCHANGED, SEE PREVIOUS FULL FILE] ...
 @app.post("/api/chips")
 def get_chips(req: OptimizeRequest):
     try:
